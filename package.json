@@ -1,0 +1,17 @@
+{
+  "name": "ppx-agent-test",
+  "version": "0.1.0-beta",
+  "description": "皮皮虾 (PPX Agent 测试版) - 会自我修复、自我学习的超级 Agent. 零依赖自包含核心.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "main": "src/agent/index.js",
+  "scripts": {
+    "start": "node src/agent/index.js",
+    "chat": "node src/cli.js",
+    "selfheal": "node src/selfheal/run.js",
+    "test": "node --test test/"
+  }
+}

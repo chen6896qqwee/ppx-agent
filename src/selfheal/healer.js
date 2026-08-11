@@ -1,0 +1,84 @@
+﻿// src/selfheal/healer.js - 自愈引擎
+// 1. 启动检查: 修复缺失目录/损坏JSON/权限
+// 2. 崩溃恢复: 检测上次异常退出, 清理残留
+// 3. 数据一致性: 校验记忆文件
+import fs from "node:fs";
+import path from "node:path";
+import { ensureDir, readJson } from "../utils/store.js";
+import { info, warn, error } from "../utils/logger.js";
+
+export class Healer {
+  constructor(rootDir) {
+    this.root = rootDir;
+    this.dataDir = path.join(rootDir, "data");
+    this.integrity = path.join(this.dataDir, "integrity.json");
+  }
+
+  // 启动体检: 返回修复清单
+  runStartupChecks() {
+    const fixes = [];
+    ensureDir(this.dataDir);
+    for (const sub of ["memory", "memory/daily", "experience", "sessions", "logs"]) {
+      const d = path.join(this.dataDir, sub);
+      if (!fs.existsSync(d)) { fs.mkdirSync(d, { recursive: true }); fixes.push(`created dir: ${sub}`); }
+    }
+    // 校验关键 JSON 可解析
+    const facts = path.join(this.dataDir, "memory", "facts.json");
+    if (fs.existsSync(facts)) {
+      const parsed = readJson(facts, null);
+      if (parsed === null) {
+        // 损坏: 备份后重建
+        const bak = facts + ".corrupt-" + Date.now();
+        fs.renameSync(facts, bak);
+        fs.writeFileSync(facts, "[]", "utf8");
+        fixes.push(`facts.json corrupt -> backed up to ${path.basename(bak)}, reset`);
+      }
+    }
+    return fixes;
+  }
+
+  // 崩溃恢复: 检查上次是否干净退出
+  checkCrash() {
+    const state = readJson(this.integrity, { clean: true, pid: null });
+    const result = { crashed: false, detail: null };
+    if (state.clean === false) {
+      result.crashed = true;
+      result.detail = `上次进程 (pid=${state.pid}) 未干净退出, 可能残留临时文件`;
+      this._cleanupTmp();
+    }
+    return result;
+  }
+
+  _cleanupTmp() {
+    const walk = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      for (const f of fs.readdirSync(dir)) {
+        const p = path.join(dir, f);
+        if (fs.statSync(p).isDirectory()) walk(p);
+        else if (f.endsWith(".tmp")) { fs.unlinkSync(p); info(`cleaned tmp: ${f}`); }
+      }
+    };
+    walk(this.dataDir);
+  }
+
+  markDirty() {
+    ensureDir(this.dataDir);
+    fs.writeFileSync(this.integrity, JSON.stringify({ clean: false, pid: process.pid, ts: Date.now() }), "utf8");
+  }
+
+  markClean() {
+    ensureDir(this.dataDir);
+    fs.writeFileSync(this.integrity, JSON.stringify({ clean: true, pid: process.pid, ts: Date.now() }), "utf8");
+  }
+
+  // 完整自愈入口
+  heal() {
+    const fixes = this.runStartupChecks();
+    const crash = this.checkCrash();
+    const report = { fixes, crashed: crash.crashed, crashDetail: crash.detail };
+    if (fixes.length) info(`selfheal: 修复 ${fixes.length} 项: ${fixes.join("; ")}`);
+    else info("selfheal: 无异常");
+    if (crash.crashed) warn(`selfheal: 检测到崩溃残留 -> ${crash.detail}`);
+    return report;
+  }
+}

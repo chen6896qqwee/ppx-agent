@@ -1,0 +1,15 @@
+﻿{
+  "agent": { "name": "皮皮虾", "yuan": "ppx" },
+  "user": { "name": "兄弟" },
+  "providers": [
+    { "id": "openai", "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY", "model": "gpt-4o-mini", "timeout_ms": 180000 },
+    { "id": "volcengine", "base_url": "https://ark.cn-beijing.volces.com/api/v3", "api_key_env": "VOLCENGINE_API_KEY", "model": "REPLACE_WITH_YOUR_ENDPOINT", "timeout_ms": 180000 },
+    { "id": "deepseek", "base_url": "https://api.deepseek.com/v1", "api_key_env": "DEEPSEEK_API_KEY", "model": "deepseek-chat", "timeout_ms": 180000 },
+    { "id": "dashscope", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api_key_env": "DASHSCOPE_API_KEY", "model": "qwen-turbo", "timeout_ms": 180000 }
+  ],
+  "memory": { "enabled": true, "token_budget": 2500, "decay_per_day": 0.02, "hit_bonus": 5, "base_importance": 10, "compile_threshold": 4.5, "forget_speed": 1.0 },
+  "experience": { "enabled": true },
+  "selfheal": { "enabled": true, "check_interval_ms": 60000, "max_restart_attempts": 3 },
+  "tools": { "enabled": true },
+  "channels": { "http": { "enabled": true, "port": 8899 }, "feishu": { "enabled": false }, "wechat": { "enabled": false } }
+}
