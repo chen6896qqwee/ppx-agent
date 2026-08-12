@@ -8,6 +8,36 @@ import { scrubPII } from "../utils/pii.js";
 
 const execFileP = promisify(execFile);
 
+// ---- run_command 安全策略 (P0) ----
+const DEFAULT_DENY = [
+  /delete|erase|rmdir|rd \/s|deltree/i,
+  /format\s/i, /mkfs/i, /fdisk/i, /diskpart/i, /shutdown/i,
+  /restart/i, /reboot/i, /halt/i, /poweroff/i,
+  /reg\s+delete/i, /taskkill/i, /pkill/i, /kill\s+-9/i,
+  /rm\s+-rf/i, /rm\s+-fr/i,
+  /curl|wget|Invoke-WebRequest|iwr/i,
+  /git\s+push.*--force/i, /git\s+reset.*--hard/i,
+];
+const DEFAULT_ALLOW_PREFIX = [
+  "git", "npm", "npx", "yarn", "pnpm", "node", "python", "python3",
+  "ls", "dir", "pwd", "cat", "type", "echo", "head", "tail", "grep",
+  "find", "wc", "cp", "copy", "mv", "move", "mkdir", "touch", "tree",
+  "cd", "help", "ipconfig", "netstat", "tasklist", "whoami", "date", "time", "tsc",
+];
+
+function isDeniedCommand(cmd, options) {
+  const deny = (options && options.denyList) || DEFAULT_DENY;
+  for (const re of deny) if (re.test(cmd)) return true;
+  return false;
+}
+
+function isAllowedCommand(cmd, options) {
+  if (options && options.allowAll) return true;
+  const allowPrefix = (options && options.allowPrefix) || DEFAULT_ALLOW_PREFIX;
+  const first = cmd.trim().split(/[\s|&;>]+/)[0];
+  return allowPrefix.some((a) => first.startsWith(a));
+}
+
 // 安全路径: 阻止逃出工作目录 (防路径穿越)
 function safePath(root, p) {
   const resolved = path.resolve(root, p);
@@ -87,13 +117,21 @@ export function registerBuiltinTools(catalog, { rootDir, facts, memory }) {
       properties: { command: { type: "string", description: "要执行的命令" } },
       required: ["command"],
     },
-    execute: async (args) => {
+    execute: async (args, ctx) => {
+      const cmd = String(args.command || "").trim();
+      if (!cmd) return JSON.stringify({ error: "空命令" });
+      const opts = (ctx && ctx.agent && ctx.agent.config && ctx.agent.config.security) || {};
+      if (isDeniedCommand(cmd, opts)) {
+        return JSON.stringify({ error: "命令被拒绝: 命中高危黑名单 (delete/format/shutdown/curl等). 如需放行配置 security 白名单." });
+      }
+      if (!isAllowedCommand(cmd, opts)) {
+        return JSON.stringify({ error: "命令不在白名单: " + cmd.split(/[\s|&;>]+/)[0] + ". 允许: git/npm/node/python/cat/cp/mkdir 等, 或设置 security.allow_all." });
+      }
       try {
         const isWin = process.platform === "win32";
-        // 用 shell 执行, 工作目录限 rootDir
         const { stdout, stderr } = await execFileP(isWin ? "cmd.exe" : "/bin/sh", [
           isWin ? "/c" : "-c",
-          args.command,
+          cmd,
         ], { cwd: rootDir, timeout: 30000, maxBuffer: 1024 * 1024 });
         const out = (stdout || "") + (stderr ? "\n[stderr] " + stderr : "");
         return scrubPII(out).cleaned.slice(0, 20000) || "(无输出)";

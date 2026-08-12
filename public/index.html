@@ -16,6 +16,12 @@
   .msg { max-width: 78%; padding: 10px 14px; border-radius: 10px; line-height: 1.5; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
   .msg.user { align-self: flex-end; background: #1d5cff; color: #fff; }
   .msg.agent { align-self: flex-start; background: #1f242e; border: 1px solid #2a3140; }
+  .msg.agent pre { background: #0d0f13; border: 1px solid #2a3140; border-radius: 6px; padding: 10px; overflow-x: auto; margin: 8px 0; }
+  .msg.agent code { background: #0d0f13; padding: 1px 5px; border-radius: 4px; font-family: Consolas, monospace; font-size: 12.5px; }
+  .msg.agent pre code { padding: 0; background: none; }
+  .msg.agent p { margin: 6px 0; }
+  .msg.agent ul, .msg.agent ol { margin: 6px 0 6px 20px; }
+  .msg.agent a { color: #4da3ff; }
   .msg.err { background: #3a1d1d; border: 1px solid #5c2a2a; }
   .input-bar { padding: 14px; border-top: 1px solid #1f242e; display: flex; gap: 10px; }
   .input-bar input { flex: 1; padding: 12px 14px; border-radius: 8px; border: 1px solid #2a3140; background: #1a1e26; color: #e6e6e6; font-size: 14px; outline: none; }
@@ -43,7 +49,7 @@
 <div class="app">
   <div class="chat">
     <div class="chat-head">
-      <h1>皮皮虾</h1><span class="badge">PPX Agent</span>
+      <h1>皮皮虾</h1><span class="badge">PPX Agent</span><button onclick="resetSession()" style="margin-left:auto;padding:6px 12px;border-radius:8px;border:1px solid #2a3140;background:#1a1e26;color:#888;cursor:pointer;font-size:12px;white-space:nowrap">清空会话</button>
     </div>
     <div id="msgs"><div class="empty">和皮皮虾聊聊吧</div></div>
     <div class="input-bar">
@@ -62,21 +68,56 @@
     <div id="panel-stats" class="panel"></div>
   </div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <script>
 const msgs=document.getElementById("msgs"), inp=document.getElementById("inp"), btn=document.getElementById("btn");
-function addMsg(role, text){
+let sessionId = localStorage.getItem("ppx_sid") || ("s_" + Math.random().toString(36).slice(2,10));
+localStorage.setItem("ppx_sid", sessionId);
+function esc(s){ return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function renderMd(t){ try{ return marked.parse(String(t||"")); }catch(e){ return esc(t); } }
+function addMsg(role, text, isMd){
   msgs.querySelector(".empty")?.remove();
-  const d=document.createElement("div"); d.className="msg "+role; d.textContent=text; msgs.appendChild(d); msgs.scrollTop=msgs.scrollHeight;
+  const d=document.createElement("div"); d.className="msg "+role;
+  if(role==="agent" && isMd){ d.innerHTML=renderMd(text); }
+  else { d.textContent=text; }
+  msgs.appendChild(d); msgs.scrollTop=msgs.scrollHeight;
+  return d;
 }
+// 流式对话: fetch + 读 SSE
 async function send(){
   const t=inp.value.trim(); if(!t) return;
   addMsg("user", t); inp.value=""; btn.disabled=true;
+  const agentEl=addMsg("agent", "…", false);
+  let full="";
   try{
-    const r=await fetch("/message",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:t})});
-    const j=await r.json();
-    addMsg(j.error?"err":"agent", j.reply || j.error || "(无回复)");
+    const r=await fetch("/message/stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:t, sessionId})});
+    if(!r.ok || !r.body){ const j=await r.json().catch(()=>null); addMsg("err", j?.error || "请求失败"+(r.status===401?" (未授权)":"")); btn.disabled=false; return; }
+    const reader=r.body.getReader(); const dec=new TextDecoder(); let buf="";
+    while(true){
+      const {done,value}=await reader.read(); if(done) break;
+      buf+=dec.decode(value,{stream:true});
+      let idx;
+      while((idx=buf.indexOf("\n\n"))!==-1){
+        const chunk=buf.slice(0,idx); buf=buf.slice(idx+2);
+        for(const line of chunk.split("\n")){
+          if(!line.startsWith("data:")) continue;
+          try{
+            const j=JSON.parse(line.slice(5).trim());
+            if(j.type==="delta"){ full+=j.content; agentEl.innerHTML=renderMd(full); msgs.scrollTop=msgs.scrollHeight; }
+            else if(j.type==="done"){ full=j.content; agentEl.innerHTML=renderMd(full); msgs.scrollTop=msgs.scrollHeight; }
+            else if(j.type==="error"){ addMsg("err", j.error); }
+          }catch{}
+        }
+      }
+    }
   }catch(e){ addMsg("err", "请求失败: "+e.message); }
   btn.disabled=false;
+}
+function resetSession(){
+  if(!confirm("清空当前会话历史?")) return;
+  sessionId="s_"+Math.random().toString(36).slice(2,10); localStorage.setItem("ppx_sid", sessionId);
+  fetch("/reset",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sessionId})});
+  msgs.innerHTML='<div class="empty">新会话已开始</div>';
 }
 btn.onclick=send; inp.onkeydown=e=>{ if(e.key==="Enter") send(); };
 

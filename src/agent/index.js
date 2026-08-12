@@ -16,6 +16,11 @@ import { Traces } from "../utils/trace.js";
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAX_TOOL_ROUNDS = 8;
 const MAX_TOOL_ERROR_RETRY = 2;
+const MAX_SESSION_HISTORY = 20;   // ??????????(??)
+const HISTORY_TOKEN_BUDGET = 4000; // ????? token ??????
+
+// ?? token ??: ???1???0.6token, ??1token?4??
+function estimateTokens(s){ return Math.ceil(String(s||'').length / 1.6); }
 
 export class PPXAgent {
   constructor({ root = ROOT, configFile = null } = {}) {
@@ -54,6 +59,9 @@ export class PPXAgent {
     registerAdvancedTools(this.tools, { dataDir: this.dataDir, scheduler: this.scheduler, onMemoryNote: (note) => this.facts.add(note, { source: "schedule" }) });
     registerMethodTools(this.tools);
     this.toolsEnabled = this.config.tools?.enabled !== false;
+
+    // ?????? (sessionKey -> [{role,content}]) ????????
+    this.sessions = new Map();
   }
 
 
@@ -168,6 +176,34 @@ export class PPXAgent {
     return r.content;
   }
 
+  // ---- 多轮会话历史 (P0) ----
+  _getSession(sessionKey) {
+    const k = sessionKey || "default";
+    if (!this.sessions.has(k)) this.sessions.set(k, []);
+    return this.sessions.get(k);
+  }
+
+  // 追加一轮对话到会话历史, 并按 token 预算从头部滚动截断
+  _pushTurn(sessionKey, userMsg, assistant) {
+    const hist = this._getSession(sessionKey);
+    hist.push({ role: "user", content: userMsg });
+    if (assistant) hist.push({ role: "assistant", content: assistant });
+    while (hist.length > MAX_SESSION_HISTORY) hist.shift();
+    let total = 0, dropFrom = 0;
+    for (let i = hist.length - 1; i >= 0; i--) {
+      total += estimateTokens(hist[i].content);
+      if (total > HISTORY_TOKEN_BUDGET) { dropFrom = i + 1; break; }
+    }
+    if (dropFrom > 0) this.sessions.set(sessionKey, hist.slice(dropFrom));
+  }
+
+  _loadHistory(sessionKey) {
+    return this._getSession(sessionKey).map((m) => ({ ...m }));
+  }
+
+  // 重置某会话历史 (新会话)
+  resetSession(sessionKey) { this.sessions.delete(sessionKey); }
+
   // 组装记忆上下文
   _context(userMsg) {
     const base = this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context() + "\n\n" + this.experience.context();
@@ -176,9 +212,16 @@ export class PPXAgent {
   }
 
   // 对话主入口 (含工具调用循环)
-  async chat(userMsg, { persist = true } = {}) {
+  async chat(userMsg, { persist = true, sessionKey = "default" } = {}) {
     const system = this._context(userMsg);
-    const messages = [{ role: "system", content: system }, { role: "user", content: userMsg }];
+    // ??: [system] + [??] + [??????]
+    const history = this._loadHistory(sessionKey);
+    const messages = [{ role: "system", content: system }, ...history];
+
+    // ????????? user ??(??), ??????
+    const hist = this._getSession(sessionKey);
+    const isRepeat = hist[hist.length - 1]?.role === "user" && hist[hist.length - 1].content === String(userMsg);
+    if (!isRepeat) messages.push({ role: "user", content: String(userMsg) });
 
     let reply;
     if (this.llm) {
@@ -195,6 +238,7 @@ export class PPXAgent {
     }
 
     if (persist) {
+      this._pushTurn(sessionKey, String(userMsg), reply);
       await this.memory.recordTurn(userMsg, reply);
       this.l0.record({ role: "user", content: userMsg, sessionKey: "default" });
       this.l0.record({ role: "assistant", content: reply, sessionKey: "default" });
@@ -205,6 +249,30 @@ export class PPXAgent {
     return reply;
   }
 
+
+  // 流式对话: 返回 { text, history } 或回调 onDelta 推送增量
+  // 简化: 流式只用于无工具纯对话场景 (工具循环仍走非流式以保证轨迹完整性)
+  async chatStream(userMsg, { sessionKey = "default", onDelta } = {}) {
+    if (!this.llm) return this.chat(userMsg, { sessionKey });
+    const system = this._context(userMsg);
+    const history = this._loadHistory(sessionKey);
+    const messages = [{ role: "system", content: system }, ...history, { role: "user", content: String(userMsg) }];
+    let full = "";
+    try {
+      full = await this.llm.streamChat(messages, {
+        onDelta: (d) => { full += d; onDelta && onDelta(d); },
+      });
+    } catch (e) {
+      // 流式失败降级为非流式
+      warn("流式失败, 降级非流式:", e.message);
+      return this.chat(userMsg, { sessionKey });
+    }
+    this._pushTurn(sessionKey, String(userMsg), full);
+    await this.memory.recordTurn(userMsg, full);
+    this.l0.record({ role: "user", content: String(userMsg), sessionKey });
+    this.l0.record({ role: "assistant", content: full, sessionKey });
+    return full;
+  }
 
   // 多 provider 回退: 依次尝试, 失败切下一个
   async _llmWithFallback(seedMessages) {

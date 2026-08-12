@@ -59,4 +59,55 @@ export class LLMClient {
   apiKeyEnv() {
     return undefined;
   }
+
+  // 流式 chat: 逐块回调 (SSE), 返回累积文本
+  // onDelta(content) 每次增量, onDone(full) 结束
+  async streamChat(messages, { temperature = 0.7, maxTokens = 4096, onDelta, signal } = {}) {
+    if (!this.apiKey) throw new Error(`LLMClient: 缺少 API key`);
+    const url = `${this.baseUrl}/chat/completions`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    const extSig = signal || null;
+    if (extSig) extSig.addEventListener("abort", () => ctrl.abort());
+    let full = "";
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.apiKey}` },
+        body: JSON.stringify({ model: this.model, messages, temperature, max_tokens: maxTokens, stream: true }),
+        signal: ctrl.signal,
+      });
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => "");
+        throw new Error(`LLM HTTP ${resp.status}: ${txt.slice(0, 300)}`);
+      }
+      if (!resp.body) { throw new Error("响应无 body, 不支持流式"); }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        // 按行解析 SSE
+        let idx;
+        while ((idx = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (data === "[DONE]") { done = true; break; }
+          try {
+            const j = JSON.parse(data);
+            const delta = j.choices?.[0]?.delta?.content;
+            if (delta) { full += delta; onDelta && onDelta(delta); }
+          } catch {}
+        }
+        if (buf.includes("[DONE]")) break;
+      }
+      return full;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }

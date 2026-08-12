@@ -13,6 +13,25 @@ export class HttpChannel extends Channel {
     this.server = null;
     this.agent = agent;
     this.publicDir = path.join(this.agent.root, "public");
+    this.authToken = process.env.PPX_AUTH_TOKEN || this._tokenFromConfig();
+  }
+
+  _tokenFromConfig() {
+    try {
+      const p = path.join(this.agent.root, "config", "ppx.json");
+      if (fs.existsSync(p)) {
+        const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
+        return (cfg.channels && cfg.channels.http && cfg.channels.http.auth_token) || "";
+      }
+    } catch {}
+    return "";
+  }
+
+  // 简单 Bearer 认证中间件 (若配置了 token)
+  _authed(req, res) {
+    if (!this.authToken) return true;
+    const h = req.headers["authorization"] || "";
+    return h === "Bearer " + this.authToken;
   }
 
   async connect() {
@@ -30,19 +49,68 @@ export class HttpChannel extends Channel {
       }
 
       if (req.method === "POST" && req.url === "/message") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
         let body = "";
         for await (const chunk of req) body += chunk;
         try {
           const data = JSON.parse(body);
           const text = data.message || data.text || "";
           if (!text) { res.writeHead(400); res.end(JSON.stringify({ error: "missing message" })); return; }
-          const reply = await this.agent.chat(String(text));
+          const sessionKey = data.sessionId || "default";
+          const reply = await this.agent.chat(String(text), { sessionKey });
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ reply, agent: this.agent.config.agent?.name || "ppx" }));
+          res.end(JSON.stringify({ reply, sessionId: sessionKey, agent: this.agent.config.agent?.name || "ppx" }));
         } catch (e) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: e.message }));
         }
+        return;
+      }
+
+      // SSE 流式对话
+      if (req.method === "POST" && (req.url === "/message/stream" || req.url === "/chat")) {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        try {
+          const data = JSON.parse(body);
+          const text = data.message || data.text || "";
+          if (!text) { res.writeHead(400); res.end(JSON.stringify({ error: "missing message" })); return; }
+          const sessionKey = data.sessionId || "default";
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+          });
+          const send = (obj) => res.write("data: " + JSON.stringify(obj) + "\n\n");
+          let full = "";
+          const reply = await this.agent.chatStream(String(text), {
+            sessionKey,
+            onDelta: (d) => { full += d; try { send({ type: "delta", content: d }); } catch {} },
+          });
+          // 若降级非流式, full 可能为空, 用返回的 reply
+          const finalContent = full || reply;
+          send({ type: "done", content: finalContent, sessionId: sessionKey });
+          res.end();
+        } catch (e) {
+          try { res.write("data: " + JSON.stringify({ type: "error", error: e.message }) + "\n\n"); } catch {}
+          try { res.end(); } catch {}
+        }
+        return;
+      }
+
+      // 会话重置
+      if (req.method === "POST" && req.url === "/reset") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        try {
+          const data = JSON.parse(body || "{}");
+          this.agent.resetSession(data.sessionId || "default");
+        } catch {}
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
         return;
       }
 
@@ -60,6 +128,9 @@ export class HttpChannel extends Channel {
         }
         return;
       }
+      // API 端点认证
+      const protectedApi = reqPath.startsWith("/api/");
+      if (protectedApi && !this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
       // 轨迹 API
       if (req.method === "GET" && reqPath === "/api/traces") {
         const limit = Number((req.url.split("limit=")[1] || "").split("&")[0] || 50);
