@@ -12,6 +12,6 @@
     "start": "node src/agent/index.js",
     "chat": "node src/cli.js",
     "selfheal": "node src/selfheal/run.js",
-    "test": "node --test test/"
+    "test": "node --test"
   }
 }

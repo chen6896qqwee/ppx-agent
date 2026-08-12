@@ -54,11 +54,13 @@ export class Healer {
       if (!fs.existsSync(dir)) return;
       for (const f of fs.readdirSync(dir)) {
         const p = path.join(dir, f);
-        if (fs.statSync(p).isDirectory()) walk(p);
-        else if (f.endsWith(".tmp")) { fs.unlinkSync(p); info(`cleaned tmp: ${f}`); }
+        let st;
+        try { st = fs.statSync(p); } catch { continue; } // 并发删除竞态容错
+        if (st.isDirectory()) walk(p);
+        else if (f.endsWith(".tmp")) { try { fs.unlinkSync(p); } catch {} info(`cleaned tmp: ${f}`); }
       }
     };
-    walk(this.dataDir);
+walk(this.dataDir);
   }
 
   markDirty() {
