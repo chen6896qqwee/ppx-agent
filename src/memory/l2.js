@@ -87,7 +87,30 @@ export class SceneStore {
     }));
   }
 
-  // 按记忆 id 找回场景
+  // 按文本匹配激活场景 (关键词命中)
+  findMatch(text) {
+    const tokens = tokenize(text);
+    if (!tokens.length) return null;
+    let best = null, bestScore = 0;
+    for (const s of this.scenes) {
+      let score = 0;
+      for (const t of tokens) if ((s.keywords || []).includes(t)) score++;
+      if (score > bestScore) { bestScore = score; best = s; }
+    }
+    return bestScore >= 1 ? best : null;
+  }
+
+  // 激活场景的上下文块 (人设 + 能力)
+  activeContext(text) {
+    const s = this.findMatch(text);
+    if (!s) return "";
+    return [
+      `【当前场景:${s.name}】`,
+      s.description ? `场景介绍: ${s.description}` : "",
+      s.canHelp ? `你可以帮用户: ${s.canHelp}` : "",
+      s.mode === "manual" ? "(用户手动设定, 请遵循此场景行为)" : "",
+    ].filter(Boolean).join("\n");
+  }  // 按记忆 id 找回场景
   findByFactId(id) {
     return this.scenes.find((s) => s.facts.some((f) => f.id === id));
   }

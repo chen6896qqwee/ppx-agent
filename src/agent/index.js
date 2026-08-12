@@ -169,13 +169,15 @@ export class PPXAgent {
   }
 
   // 组装记忆上下文
-  _context() {
-    return this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context() + "\n\n" + this.experience.context();
+  _context(userMsg) {
+    const base = this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context() + "\n\n" + this.experience.context();
+    const active = this.scenes.activeContext(userMsg || "");
+    return active ? base + "\n\n" + active : base;
   }
 
   // 对话主入口 (含工具调用循环)
   async chat(userMsg, { persist = true } = {}) {
-    const system = this._context();
+    const system = this._context(userMsg);
     const messages = [{ role: "system", content: system }, { role: "user", content: userMsg }];
 
     let reply;
