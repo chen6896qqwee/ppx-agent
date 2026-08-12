@@ -9,7 +9,8 @@ const COMPACT_THRESHOLD = 50;   // today.md 超过此行数触发滚动压缩
 const COMPACT_KEEP = 20;        // 压缩后保留的近期行数
 
 export class MemoryTicker {
-  constructor(dataDir, factStore) {
+  constructor(dataDir, factStore, summarizer = null) {
+    this.summarizer = summarizer;
     this.dir = path.join(dataDir, "memory");
     ensureDir(this.dir);
     ensureDir(path.join(this.dir, "daily"));
@@ -56,7 +57,7 @@ export class MemoryTicker {
     }
   }
 
-  recordTurn(user, assistant) {
+  async recordTurn(user, assistant) {
     this._rollDay();
     this.state.turnCount += 1;
     const line = `- [${new Date().toISOString()}] 用户: ${String(user).slice(0, 200)}`;
@@ -64,7 +65,7 @@ export class MemoryTicker {
     if (assistant) appendLine(this.todayMd, `  -> ${String(assistant).slice(0, 200)}`);
     this._saveState();
     if (this.state.turnCount % TURNS_PER_SUMMARY === 0) this._compileDaily_Rolling();
-    this._compactIfNeeded();
+    await this._compactIfNeeded();
     if (user) this.factStore.addMemory(user);
   }
 
@@ -81,7 +82,7 @@ export class MemoryTicker {
 
 
   // 滚动上下文压缩: today.md 超量时, 把最旧对话聚合压缩进 longterm, 只留近期
-  _compactIfNeeded() {
+  async _compactIfNeeded() {
     const content = readText(this.todayMd);
     const lines = content.split("\n").filter((li) => li.trim());
     if (lines.length < COMPACT_THRESHOLD) return;
@@ -92,7 +93,16 @@ export class MemoryTicker {
       .map((li) => li.split("用户:")[1].trim())
       .filter(Boolean);
     let summary;
-    if (userMsgs.length) {
+    // 优先 LLM 真摘要 (若配置了 summarizer), 否则降级为堆叠
+    if (this.summarizer && compactedLines.length) {
+      try {
+        const raw = compactedLines.slice(0, 60).join("\n");
+        const s = await this.summarizer(raw);
+        summary = "[" + logicalDay() + " llm-summary] " + (s || "(空)");
+      } catch (e) {
+        summary = "[" + logicalDay() + " thin] archived " + compactedLines.length + " lines (llm fail: " + e.message + ")";
+      }
+    } else if (userMsgs.length) {
       summary = "[" + logicalDay() + " thin] " + userMsgs.length + " rounds archived: " + userMsgs.slice(0, 12).join(" | ") + (userMsgs.length > 12 ? " | ..." : "");
     } else {
       summary = "[" + logicalDay() + " thin] archived " + compactedLines.length + " lines";

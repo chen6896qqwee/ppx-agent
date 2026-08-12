@@ -11,6 +11,7 @@ import { ToolCatalog, registerBuiltinTools, registerAdvancedTools, Scheduler, TO
 import { registerMethodTools } from "../tools/index.js";
 import { readJson, readText, ensureDir } from "../utils/store.js";
 import { info, warn, error } from "../utils/logger.js";
+import { Traces } from "../utils/trace.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAX_TOOL_ROUNDS = 8;
@@ -36,12 +37,17 @@ export class PPXAgent {
     this.allProviders = this._resolveAllLLMs();
     this.userName = this.config.user?.name || "兄弟";
 
+    // 注入 LLM 摘要器给记忆压缩 (真摘要, 非堆叠)
+    this.memory.summarizer = (raw) => this._summarizeMemory(raw);
+
     // 记忆系统: 腾讯风格四层 (L0对话→L1原子→L2场景→L3画像)
     this.l0 = new L0Recorder(this.dataDir);
     this.scenes = new SceneStore(this.dataDir);
     this.personaStore = new PersonaStore(this.dataDir, { userName: this.userName });
 
     // 工具系统
+    this.traces = new Traces(this.dataDir);
+
     this.tools = new ToolCatalog();
     registerBuiltinTools(this.tools, { rootDir: this.root, facts: this.facts, memory: this.memory });
     this.scheduler = new Scheduler(this.dataDir);
@@ -152,6 +158,16 @@ export class PPXAgent {
     }
   }
 
+  // 用 LLM 把旧对话浓缩成语义摘要 (Harness 上下文工程)
+  async _summarizeMemory(raw) {
+    if (!this.llm) throw new Error("无 LLM");
+    const r = await this.llm.chat([
+      { role: "system", content: "你是记忆压缩器。把下面这段对话记录压缩成一段简洁的中文摘要(≤200字), 保留关键事实、用户偏好、进展和待办。不要客套, 直接输出摘要。" },
+      { role: "user", content: String(raw).slice(0, 4000) },
+    ]);
+    return r.content;
+  }
+
   // 组装记忆上下文
   _context() {
     return this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context() + "\n\n" + this.experience.context();
@@ -177,7 +193,7 @@ export class PPXAgent {
     }
 
     if (persist) {
-      this.memory.recordTurn(userMsg, reply);
+      await this.memory.recordTurn(userMsg, reply);
       this.l0.record({ role: "user", content: userMsg, sessionKey: "default" });
       this.l0.record({ role: "assistant", content: reply, sessionKey: "default" });
       // L2 场景归档: 从新记忆里找需要归档的
@@ -225,7 +241,16 @@ export class PPXAgent {
         if (tc.type === "function" && tc.function) {
           let args = {};
           try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
+          const t0 = Date.now();
           const result = await this.tools.call(tc.function.name, args, { agent: this });
+          this.traces.record({
+            tool: tc.function.name,
+            args,
+            result: result.slice(0, 800),
+            ok: !result.startsWith(TOOL_ERROR_PREFIX),
+            durationMs: Date.now() - t0,
+            error: result.startsWith(TOOL_ERROR_PREFIX) ? result : null,
+          });
           messages.push({ role: "tool", tool_call_id: tc.id, content: result });
           if (result.startsWith(TOOL_ERROR_PREFIX)) errors.push(result);
         }

@@ -12,7 +12,13 @@ export function atomicWrite(file, data) {
   ensureDir(path.dirname(file));
   const tmp = file + "." + crypto.randomBytes(4).toString("hex") + ".tmp";
   fs.writeFileSync(tmp, data, "utf8");
-  fs.renameSync(tmp, file);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    // 并发写同一文件时 rename 可能 EPERM (Windows): 降级为直接写, 保数据不丢
+    try { fs.unlinkSync(tmp); } catch {}
+    fs.writeFileSync(file, data, "utf8");
+  }
 }
 
 export function readJson(file, fallback = null) {
