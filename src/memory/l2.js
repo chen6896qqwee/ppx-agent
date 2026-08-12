@@ -48,6 +48,9 @@ export class SceneStore {
         name: tokens.slice(0, 3).join("·"),
         keywords: tokens.slice(0, 10),
         facts: [{ id: fact.id, content: fact.content, ts: fact.created }],
+        mode: "auto",
+        description: tokens.slice(1, 4).join("、") || "自动场景",
+        canHelp: "基于该话题的对话与记忆提供帮助",
         created: logicalDay(),
         lastUpdated: logicalDay(),
       };
@@ -55,6 +58,33 @@ export class SceneStore {
     }
     writeJson(this.file, this.scenes);
     return best;
+  }
+
+  // 手动创建场景 (用户设定人设/能力, 类似灵魂文件)
+  create({ name, description, canHelp, keywords = [] }) {
+    const scene = {
+      id: "s_" + Math.random().toString(36).slice(2, 8),
+      name: String(name || "").slice(0, 50),
+      keywords: keywords.slice(0, 15),
+      facts: [],
+      mode: "manual",
+      description: String(description || "").slice(0, 300),
+      canHelp: String(canHelp || "").slice(0, 300),
+      created: logicalDay(),
+      lastUpdated: logicalDay(),
+    };
+    this.scenes.push(scene);
+    this._save();
+    return scene;
+  }
+
+  // 列出所有场景 (含介绍)
+  listWithDesc() {
+    return this.scenes.map((s) => ({
+      id: s.id, name: s.name, mode: s.mode || "auto",
+      description: s.description || "", canHelp: s.canHelp || "",
+      facts: (s.facts || []).length, lastUpdated: s.lastUpdated,
+    }));
   }
 
   // 按记忆 id 找回场景

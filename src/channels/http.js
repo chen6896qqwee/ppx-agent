@@ -77,7 +77,7 @@ export class HttpChannel extends Channel {
       if (req.method === "GET" && reqPath === "/api/memory") {
         res.writeHead(200, { "Content-Type": "application/json" });
         const facts = this.agent.facts ? this.agent.facts.list().slice(0, 20).map((f) => ({ content: f.content, score: f.score, type: f.type })) : [];
-        const scenes = this.agent.scenes ? this.agent.scenes.scenes.slice(-10).map((s) => ({ name: s.name, n: s.facts.length })) : [];
+        const scenes = this.agent.scenes ? this.agent.scenes.listWithDesc().slice(-10) : [];
         res.end(JSON.stringify({ facts, scenes }));
         return;
       }

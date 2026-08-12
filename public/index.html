@@ -95,8 +95,15 @@ async function load(which){
   try{
     if(which==="memory"){
       const r=await fetch("/api/memory"); const j=await r.json();
-      el.innerHTML="<div class=card><div class=t>关键事实</div>"+(j.facts||[]).map(f=>`<div class=c>${esc(f.content)}</div>`).join("")||"<div class=empty>暂无事实</div>";
-      el.innerHTML+="<div class=card><div class=t>场景</div>"+(j.scenes||[]).map(s=>`<div class=c>${esc(s.name)} <span class=pill ok>${s.n}</span></div>`).join("")||"";
+      // 场景区 (含新建)
+      el.innerHTML='<button onclick="newScene()" style="width:100%;padding:9px;margin-bottom:10px;border-radius:8px;border:1px solid #2a3140;background:#1d5cff;color:#fff;cursor:pointer;font-size:13px">+ 新建场景</button>';
+      el.innerHTML+=`<div class=card><div class=t>场景 (${(j.scenes||[]).length})</div>`+
+        (j.scenes||[]).map(s=>`<div class=card style=margin:8px 0><div style="font-size:13px;font-weight:600">${esc(s.name)} <span class="pill ${s.mode==="manual"?"ok":"bad"}">${s.mode==="manual"?"自定义":"自动"}</span></div>`+
+          `<div class=c style=margin-top:4px>${esc(s.description||"")}</div>`+
+          `<div class=c style="margin-top:4px;color:#4da3ff">能帮: ${esc(s.canHelp||"")}</div>`+
+          `<div class=t style=margin-top:4px>${s.facts}条记忆 · 更新 ${esc(s.lastUpdated||"")}</div></div>`).join("")+'</div>';
+      // 事实区
+      el.innerHTML+="<div class=card><div class=t>关键事实</div>"+(j.facts||[]).map(f=>`<div class=c>${esc(f.content)}</div>`).join("")||"<div class=empty>暂无事实</div>";
     }else if(which==="traces"){
       const r=await fetch("/api/traces?limit=50"); const j=await r.json();
       el.innerHTML=(j.length?j.map(t=>`<div class=card><div class=t>${esc(t.tool)} <span class=pill ${t.ok?"ok":"bad"}>${t.ok?"OK":"FAIL"}</span> ${t.durationMs}ms</div><div class=c>${esc(t.args).slice(0,120)}</div></div>`).join(""):'<div class=empty>暂无轨迹</div>');
@@ -106,6 +113,10 @@ async function load(which){
         "<div class=card><div class=t>慢工具 Top</div>"+(j.slowTools||[]).map(s=>`<div class=stat-row><span>${esc(s.tool)}</span><span class=v>${s.avgMs}ms</span></div>`).join("")+'</div>';
     }
   }catch(e){ el.innerHTML='<div class=empty>加载失败: '+esc(e.message)+'</div>'; }
+}
+function newScene(){
+  const n=prompt("场景名称 (如: A股交易助手)"), d=prompt("场景介绍 (这个场景是干嘛的)"), h=prompt("能帮用户干什么 (能力清单)");
+  if(n&&d&&h){ fetch("/message",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:`用 scene_create 创建场景: 名称=${n}, 介绍=${d}, 能帮=${h}`})}).then(r=>r.json()).then(()=>load("memory")).catch(()=>{}); }
 }
 function esc(s){ return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 load("memory");

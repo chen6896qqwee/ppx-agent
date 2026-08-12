@@ -106,5 +106,70 @@ export function registerMethodTools(catalog) {
     },
   });
 
+  // ---------- 场景系统: 类似灵魂文件的场景设定 ----------
+  catalog.register({
+    name: "scene_create",
+    description: "创建/更新一个场景(人设)。每个场景定义智能体在这个情境下能帮用户干什么, 类似灵魂文件。可手动设定名称/介绍/能力。",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "场景名称, 如: A股交易助手" },
+        description: { type: "string", description: "场景介绍, 说明这个场景是干嘛的" },
+        canHelp: { type: "string", description: "这个场景能帮用户干什么(能力清单)" },
+        keywords: { type: "array", items: { type: "string" }, description: "触发关键词(可选)" },
+      },
+      required: ["name", "description", "canHelp"],
+    },
+    execute: async (args, ctx) => {
+      if (!ctx.agent) return "[工具错误] scene_create: 缺少 agent 上下文";
+      const s = ctx.agent.scenes.create({
+        name: args.name, description: args.description, canHelp: args.canHelp, keywords: args.keywords,
+      });
+      return JSON.stringify({ ok: true, id: s.id, name: s.name, mode: "manual" });
+    },
+  });
+
+  catalog.register({
+    name: "scene_list",
+    description: "列出所有场景及其介绍/能力。",
+    parameters: { type: "object", properties: {} },
+    execute: async (args, ctx) => {
+      if (!ctx.agent) return "[工具错误] scene_list: 缺少 agent 上下文";
+      const list = ctx.agent.scenes.listWithDesc();
+      return list.length ? list.map((s) => `- [${s.mode}] ${s.name}: ${s.description} | 能帮: ${s.canHelp} | ${s.facts}条记忆`).join("\n") : "(暂无场景)";
+    },
+  });
+
+  catalog.register({
+    name: "scene_describe",
+    description: "用 LLM 从历史对话提炼场景介绍和能力。给定场景名, 自动总结该场景的用途和能帮用户干什么。",
+    parameters: {
+      type: "object",
+      properties: { name: { type: "string", description: "要提炼的场景名" } },
+      required: ["name"],
+    },
+    execute: async (args, ctx) => {
+      const name = textOf(args.name, "");
+      if (!name) return "[工具错误] scene_describe: 缺少 name";
+      if (!ctx.agent) return "[工具错误] scene_describe: 缺少 agent";
+      // 找场景
+      const scene = ctx.agent.scenes.scenes.find((i) => i.name === name || i.name.includes(name));
+      if (!scene) return `[工具错误] scene_describe: 未找到场景 ${name}`;
+      const facts = (scene.facts || []).map((f) => f.content).slice(-10).join("\n");
+      const system = "你是场景分析器。根据场景的历史对话, 提炼出: ①场景简介(一句话) ②这个场景能帮用户干什么(能力清单, 3-5项)。直接给结果, 格式: 简介:xxx\\n能力: - xxx\\n - xxx";
+      const user = `场景: ${scene.name}\\n历史对话:\\n${facts || "(无)"}`;
+      try {
+        const out = await llmChat(ctx.agent, system, user);
+        scene.description = out.split("能力")[0].replace("简介:", "").trim().slice(0, 300) || scene.description;
+        scene.canHelp = out.split("能力")[1]?.slice(0, 300) || scene.canHelp;
+        scene.mode = "manual";
+        ctx.agent.scenes._save();
+        return out || "(无输出)";
+      } catch (e) {
+        return `[工具错误] scene_describe: ${e.message}`;
+      }
+    },
+  });
+
   return catalog;
 }
