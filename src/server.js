@@ -52,7 +52,8 @@ export async function startServer({ root = process.cwd(), port = 8899, host = "1
 }
 
 // 直接运行
-if (process.argv[1] && process.argv[1].endsWith("src/server.js")) {
+const _entry = (process.argv[1] || "").replace(/\\/g, "/");
+if (_entry.endsWith("src/server.js")) {
   const port = Number(process.env.PPX_PORT || 8899);
   const { agent, server } = await startServer({ root: process.cwd(), port });
   console.log(`皮皮虾 服务已启动: http://127.0.0.1:${port}`);

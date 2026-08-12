@@ -1,6 +1,8 @@
 ﻿// src/channels/http.js - HTTP 通道 (零依赖)
 // 起一个本地 HTTP server, 接收 POST /message 消息, 调 agent 回复
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import { Channel } from "./base.js";
 
 export class HttpChannel extends Channel {
@@ -9,6 +11,8 @@ export class HttpChannel extends Channel {
     this.port = port;
     this.host = host;
     this.server = null;
+    this.agent = agent;
+    this.publicDir = path.join(this.agent.root, "public");
   }
 
   async connect() {
@@ -42,7 +46,44 @@ export class HttpChannel extends Channel {
         return;
       }
 
+      // ---- 静态界面 + 可观测 API ----
+      const reqPath = (req.url || "/").split("?")[0];
+      // 静态页面
+      if (req.method === "GET" && (reqPath === "/" || reqPath === "/index.html")) {
+        const html = path.join(this.publicDir, "index.html");
+        if (fs.existsSync(html)) {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(fs.readFileSync(html, "utf8"));
+        } else {
+          res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("皮皮虾服务已启动。public/index.html 未找到。");
+        }
+        return;
+      }
+      // 轨迹 API
+      if (req.method === "GET" && reqPath === "/api/traces") {
+        const limit = Number((req.url.split("limit=")[1] || "").split("&")[0] || 50);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(this.agent.traces.read(undefined, limit)));
+        return;
+      }
+      // 统计 API
+      if (req.method === "GET" && reqPath === "/api/stats") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(this.agent.traces.stats()));
+        return;
+      }
+      // 记忆 API
+      if (req.method === "GET" && reqPath === "/api/memory") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        const facts = this.agent.facts ? this.agent.facts.list().slice(0, 20).map((f) => ({ content: f.content, score: f.score, type: f.type })) : [];
+        const scenes = this.agent.scenes ? this.agent.scenes.scenes.slice(-10).map((s) => ({ name: s.name, n: s.facts.length })) : [];
+        res.end(JSON.stringify({ facts, scenes }));
+        return;
+      }
+
       res.writeHead(404); res.end("not found");
+
     });
 
     await new Promise((resolve, reject) => {
