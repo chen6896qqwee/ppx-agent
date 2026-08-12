@@ -19,6 +19,8 @@
 | ?? 方法型Skill | humanize去AI味 / write_article分阶段写作 / clarify需求澄清 |
 | ?? 可观测 | 工具调用轨迹JSONL + 失败率/慢工具统计 |
 | ?? LLM真摘要 | 长对话自动LLM语义摘要, 非堆叠 |
+| ?? 场景系统 | 灵魂文件式场景(手动设定/历史提炼), 命中自动切换行为 |
+| ?? Next.js产品壳 | web/ 前端代理8899内核, 聊天+场景+记忆+轨迹+统计 |
 | ☁️ **多模型 API 优先** | OpenAI/DeepSeek/火山/通义 + 本地模型兜底 |
 
 ## 🚀 快速开始
@@ -28,6 +30,7 @@
 #    设置环境变量: OPENAI_API_KEY / DEEPSEEK_API_KEY / VOLCENGINE_API_KEY ...
 
 # 2. 启动自愈体检
+# 3. 启动产品壳 (Next.js, 需先启动内核): cd web && npm run dev # http://localhost:3000
 npm run selfheal
 
 # 3. 启动对话 (CLI)
