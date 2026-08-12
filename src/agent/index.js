@@ -7,12 +7,13 @@ import { Healer } from "../selfheal/healer.js";
 import { FactStore, MemoryTicker, Experience, L0Recorder, SceneStore, PersonaStore } from "../memory/index.js";
 import { Persona } from "../persona/index.js";
 import { LLMClient } from "../llm/index.js";
-import { ToolCatalog, registerBuiltinTools, registerAdvancedTools, Scheduler } from "../tools/index.js";
+import { ToolCatalog, registerBuiltinTools, registerAdvancedTools, Scheduler, TOOL_ERROR_PREFIX } from "../tools/index.js";
 import { readJson, readText, ensureDir } from "../utils/store.js";
 import { info, warn, error } from "../utils/logger.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAX_TOOL_ROUNDS = 8;
+const MAX_TOOL_ERROR_RETRY = 2;
 
 export class PPXAgent {
   constructor({ root = ROOT, configFile = null } = {}) {
@@ -204,6 +205,7 @@ export class PPXAgent {
   async _llmWithTools(seedMessages, llmInstance = this.llm) {
     const messages = [...seedMessages];
     const tools = this.toolsEnabled ? this.tools.toOpenAI() : [];
+    let errorRetries = 0;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const resp = await llmInstance.apiChat(messages, { tools });
@@ -215,14 +217,24 @@ export class PPXAgent {
         return msg.content || "[皮皮虾] (无回复)";
       }
 
-      // 执行每个工具调用
+      // 工具错误重试: 若本轮有工具失败, 汇总错误喂回模型修正后重试 (最多 errorRetries 次)
+      const errors = [];
       for (const tc of toolCalls) {
         if (tc.type === "function" && tc.function) {
           let args = {};
           try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
           const result = await this.tools.call(tc.function.name, args, { agent: this });
           messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+          if (result.startsWith(TOOL_ERROR_PREFIX)) errors.push(result);
         }
+      }
+      if (errors.length && errorRetries < MAX_TOOL_ERROR_RETRY) {
+        errorRetries++;
+        messages.push({
+          role: "user",
+          content: "以下工具调用失败, 请修正参数或改用其他方式后重试:\n" + errors.join("\n"),
+        });
+        continue;
       }
     }
     return "[皮皮虾] 工具调用轮次过多, 已停止。";

@@ -2,6 +2,8 @@
 // 统一管理所有工具: 定义 + schema + 执行函数
 import { info } from "../utils/logger.js";
 
+export const TOOL_ERROR_PREFIX = "[工具错误]";
+
 export class ToolCatalog {
   constructor() {
     this.tools = new Map();
@@ -37,14 +39,15 @@ export class ToolCatalog {
   async call(name, args, ctx = {}) {
     const tool = this.tools.get(name);
     if (!tool) {
-      return JSON.stringify({ error: `未知工具: ${name}` });
+      return `[工具错误] 未知工具: ${name}`;
     }
     try {
       info(`tool: ${name}(${JSON.stringify(args)})`);
       const result = await tool.execute(args, ctx);
       return typeof result === "string" ? result : JSON.stringify(result);
     } catch (e) {
-      return JSON.stringify({ error: `${name} 执行失败: ${e.message}` });
+      // 标准错误语义: 统一前缀, 模型可识别失败并触发重试
+      return `${TOOL_ERROR_PREFIX} ${name}: ${e.message}`;
     }
   }
 
