@@ -1,10 +1,12 @@
-﻿// src/memory/memory-ticker.js - 记忆水位移线 (参考 openhanako v4)
+// src/memory/memory-ticker.js - 记忆水位移线 (参考 openhanako v4)
 // today.md (今日水位线) -> daily/ (每日日记) -> longterm.md (长期记忆)
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, readText, writeText, appendLine, logicalDay } from "../utils/store.js";
 
 const TURNS_PER_SUMMARY = 10;
+const COMPACT_THRESHOLD = 50;   // today.md 超过此行数触发滚动压缩
+const COMPACT_KEEP = 20;        // 压缩后保留的近期行数
 
 export class MemoryTicker {
   constructor(dataDir, factStore) {
@@ -62,6 +64,7 @@ export class MemoryTicker {
     if (assistant) appendLine(this.todayMd, `  -> ${String(assistant).slice(0, 200)}`);
     this._saveState();
     if (this.state.turnCount % TURNS_PER_SUMMARY === 0) this._compileDaily_Rolling();
+    this._compactIfNeeded();
     if (user) this.factStore.addMemory(user);
   }
 
@@ -75,6 +78,30 @@ export class MemoryTicker {
     }
   }
 
+
+
+  // 滚动上下文压缩: today.md 超量时, 把最旧对话聚合压缩进 longterm, 只留近期
+  _compactIfNeeded() {
+    const content = readText(this.todayMd);
+    const lines = content.split("\n").filter((li) => li.trim());
+    if (lines.length < COMPACT_THRESHOLD) return;
+    const keepLines = lines.slice(0, 1).concat(lines.slice(-COMPACT_KEEP));
+    const compactedLines = lines.slice(1, -COMPACT_KEEP);
+    const userMsgs = compactedLines
+      .filter((li) => li.indexOf("用户:") !== -1)
+      .map((li) => li.split("用户:")[1].trim())
+      .filter(Boolean);
+    let summary;
+    if (userMsgs.length) {
+      summary = "[" + logicalDay() + " thin] " + userMsgs.length + " rounds archived: " + userMsgs.slice(0, 12).join(" | ") + (userMsgs.length > 12 ? " | ..." : "");
+    } else {
+      summary = "[" + logicalDay() + " thin] archived " + compactedLines.length + " lines";
+    }
+    let longterm = readText(this.longtermMd);
+    longterm += "\n## " + logicalDay() + " (rollup)\n" + summary + "\n";
+    writeText(this.longtermMd, longterm);
+    writeText(this.todayMd, keepLines.join("\n") + "\n");
+  }
   context() {
     const today = readText(this.todayMd);
     const longterm = readText(this.longtermMd).slice(-3000);
