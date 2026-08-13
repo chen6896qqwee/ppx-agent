@@ -16,3 +16,11 @@ logs/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 本地工作区
+.workbuddy/
+_rd*.py
+_ev.py
+
+.deps/
+*.log

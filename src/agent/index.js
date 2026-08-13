@@ -59,13 +59,23 @@ export class PPXAgent {
     registerAdvancedTools(this.tools, { dataDir: this.dataDir, scheduler: this.scheduler, onMemoryNote: (note) => this.facts.add(note, { source: "schedule" }) });
     registerMethodTools(this.tools);
     this.toolsEnabled = this.config.tools?.enabled !== false;
+    // absorb: hermest notify + interrupt state
+    this._notifyCb = null;
+    this._interrupted = false;
+    this._lastTurnUsedTools = false;
 
     // ?????? (sessionKey -> [{role,content}]) ????????
     this.sessions = new Map();
   }
 
 
-  // 选第一个可用的 provider (有 key 或本地服务)
+  
+  // absorb: hermest proactive notify + interrupt API
+  setNotify(cb) { this._notifyCb = typeof cb === "function" ? cb : null; }
+  notify(message) { if (this._notifyCb) { try { this._notifyCb(String(message)); } catch (e) {} } }
+  interrupt() { this._interrupted = true; }
+  clearInterrupt() { this._interrupted = false; }
+// 选第一个可用的 provider (有 key 或本地服务)
 
   // 返回所有可用的 LLMClient (按配置顺序)
   _resolveAllLLMs() {
@@ -207,8 +217,10 @@ export class PPXAgent {
   // 组装记忆上下文
   _context(userMsg) {
     const base = this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context() + "\n\n" + this.experience.context();
+    const CITATION_RULE = "\n\n[CITATION] When you state facts from web_search/http_request, cite the source URL right after the claim. Never fabricate sources; if unsure of origin, say you are not sure.";
     const active = this.scenes.activeContext(userMsg || "");
-    return active ? base + "\n\n" + active : base;
+    const baseCtx = active ? base + "\n\n" + active : base;
+    return baseCtx + CITATION_RULE;
   }
 
   // 对话主入口 (含工具调用循环)
@@ -236,6 +248,10 @@ export class PPXAgent {
       // 离线时也尝试简单工具: 若用户意图明确调工具
       reply = await this._offlineToolRoute(userMsg) || reply;
     }
+
+    const usedTools = this._lastTurnUsedTools;
+    this._lastTurnUsedTools = false;
+    if (this._notifyCb && usedTools) this.notify("[done] task finished (tool-backed).");
 
     if (persist) {
       this._pushTurn(sessionKey, String(userMsg), reply);
@@ -296,6 +312,7 @@ export class PPXAgent {
     let errorRetries = 0;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      if (this._interrupted) return "[interrupted] task cancelled by operator.";
       const resp = await llmInstance.apiChat(messages, { tools });
       const msg = resp.message;
       messages.push(msg);
@@ -312,6 +329,7 @@ export class PPXAgent {
           let args = {};
           try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
           const t0 = Date.now();
+          this._lastTurnUsedTools = true;
           const result = await this.tools.call(tc.function.name, args, { agent: this });
           this.traces.record({
             tool: tc.function.name,

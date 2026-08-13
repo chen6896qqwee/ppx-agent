@@ -159,6 +159,17 @@ export function registerAdvancedTools(catalog, { dataDir, scheduler, onMemoryNot
   });
 
   catalog.register({
+    name: "notify",
+    description: "Send a proactive notification message to the user channel (use for long-running tasks or async completion alerts).",
+    parameters: { type: "object", properties: { message: { type: "string", description: "notification text" } }, required: ["message"] },
+    execute: async (args, ctx) => {
+      const agent = ctx && ctx.agent;
+      if (agent && agent.notify) { agent.notify(args && args.message); return "notified"; }
+      return "no notify sink registered";
+    },
+  });
+
+  catalog.register({
     name: "add_schedule",
     description: "添加定时任务。cron 支持 'HH:MM'(每日) 或 'after:秒数'(N秒后执行一次)。",
     parameters: {
