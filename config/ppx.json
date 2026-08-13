@@ -8,6 +8,13 @@
   },
   "providers": [
     {
+      "id": "openclaw",
+      "backend": "openclaw",
+      "mjs": "C:/Users/chen/AppData/Roaming/npm/node_modules/openclaw/openclaw.mjs",
+      "session_key": "ppx:main",
+      "timeout_ms": 180000
+    },
+    {
       "id": "openai",
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
@@ -43,7 +50,7 @@
     "hit_bonus": 5,
     "base_importance": 10,
     "compile_threshold": 4.5,
-    "forget_speed": 1.0
+    "forget_speed": 1
   },
   "experience": {
     "enabled": true

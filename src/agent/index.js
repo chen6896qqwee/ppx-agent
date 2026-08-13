@@ -74,7 +74,7 @@ export class PPXAgent {
     for (const prov of provs) {
       const key = prov.api_key || process.env[prov.api_key_env];
       const isLocal = /127\.0\.0\.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
-      if (key || isLocal) clients.push(new LLMClient(prov));
+      if (key || isLocal || prov.backend === "openclaw" || prov.id === "openclaw") clients.push(new LLMClient(prov));
     }
     return clients;
   }
@@ -84,7 +84,7 @@ export class PPXAgent {
     for (const prov of provs) {
       const key = prov.api_key || process.env[prov.api_key_env];
       const isLocal = /127.0.0.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
-      if (key || isLocal) {
+      if (key || isLocal || prov.backend === "openclaw" || prov.id === "openclaw") {
         return new LLMClient(prov);
       }
     }

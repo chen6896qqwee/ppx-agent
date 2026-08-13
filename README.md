@@ -26,7 +26,17 @@
 | ?? **命令安全** | run_command 黑白名单+高危拦截 (P0 修复) |
 | ?? **HTTP 认证** | Bearer Token 可选, 保护 /message + /api (P1) |
 | ?? **Markdown 渲染** | Web UI marked.js 渲染代码块/列表 (P1) |
+| ? **OpenClaw 底座** | LLM 引擎通过 `openclaw agent` CLI 驱动 OpenClaw, 官方工具/记忆/通道循环可用, 保留多 provider 回退 |
 | ?? **多模型 API 优先** | OpenAI/DeepSeek/火山/通义 + 本地模型兜底 |
+
+## OpenClaw 底座
+
+皮皮虾的 **LLM 底座已换成 OpenClaw 引擎**：`src/llm/client.js` 新增 `openclaw` 后端，`chat()` 通过 `openclaw agent --message-file --json` CLI 驱动本机 OpenClaw 引擎作答（写临时 UTF-8 文件避免中文编码坑），并解析 `result.payloads[].text` 取回复。
+
+- 引擎：已安装的 OpenClaw（default provider 内部走火山 ark-code-latest）
+- 回退：OpenClaw 失败时自动切 volcengine / deepseek / dashscope / 本地模型
+- 配置：`config/ppx.json` 的 `providers[0]`（`backend: "openclaw"`），`mjs` 填 openclaw 可执行路径，`session_key` 默认 `ppx:main`
+- 保留：皮皮虾四层记忆 / 自愈 / 方法Skill / 工具 / web 壳 全部保留
 
 ## 🚀 快速开始
 
