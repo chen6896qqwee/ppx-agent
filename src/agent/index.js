@@ -8,7 +8,7 @@ import { FactStore, MemoryTicker, Experience, L0Recorder, SceneStore, PersonaSto
 import { Persona } from "../persona/index.js";
 import { LLMClient } from "../llm/index.js";
 import { ToolCatalog, registerBuiltinTools, registerAdvancedTools, Scheduler, TOOL_ERROR_PREFIX } from "../tools/index.js";
-import { registerMethodTools } from "../tools/index.js";
+import { registerMethodTools, registerSelfmodTools } from "../tools/index.js";
 import { readJson, readText, ensureDir } from "../utils/store.js";
 import { info, warn, error } from "../utils/logger.js";
 import { Traces } from "../utils/trace.js";
@@ -58,6 +58,8 @@ export class PPXAgent {
     this.scheduler = new Scheduler(this.dataDir);
     registerAdvancedTools(this.tools, { dataDir: this.dataDir, scheduler: this.scheduler, onMemoryNote: (note) => this.facts.add(note, { source: "schedule" }) });
     registerMethodTools(this.tools);
+    // absorb: deepseek Capability Seam + skill loader (self-modification)
+    registerSelfmodTools(this.tools, { skillsDir: path.join(this.root, "skills") });
     this.toolsEnabled = this.config.tools?.enabled !== false;
     // absorb: hermest notify + interrupt state
     this._notifyCb = null;
