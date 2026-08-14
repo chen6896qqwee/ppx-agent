@@ -238,7 +238,11 @@ export class PPXAgent {
     if (!isRepeat) messages.push({ role: "user", content: String(userMsg) });
 
     let reply;
-    if (this.llm) {
+    // 内核自主决策: 高置信简单指令本地处理, 不调 LLM
+    const local = (this.config.agent?.localIntent !== false) ? await this._localIntent(userMsg) : null;
+    if (local) {
+      reply = local;
+    } else if (this.llm) {
       try {
         reply = await this._llmWithFallback(messages);
       } catch (e) {
@@ -272,6 +276,9 @@ export class PPXAgent {
   // 简化: 流式只用于无工具纯对话场景 (工具循环仍走非流式以保证轨迹完整性)
   async chatStream(userMsg, { sessionKey = "default", onDelta } = {}) {
     if (!this.llm) return this.chat(userMsg, { sessionKey });
+    // 内核自主决策: 高置信简单指令本地处理
+    const local = (this.config.agent?.localIntent !== false) ? await this._localIntent(userMsg) : null;
+    if (local) { onDelta && onDelta(local); return local; }
     const system = this._context(userMsg);
     const history = this._loadHistory(sessionKey);
     const messages = [{ role: "system", content: system }, ...history, { role: "user", content: String(userMsg) }];
@@ -358,6 +365,38 @@ export class PPXAgent {
   }
 
   // 离线工具路由: 无 LLM 时识别简单工具指令
+  // ---- 内核自主决策: 本地意图预判层 (P2-7) ----
+  // 高置信简单指令(问候/时间/记忆/明确工具)本地处理, 不调 LLM, 省成本更快
+  async _localIntent(userMsg) {
+    const m = String(userMsg).trim();
+    // 纯问候/告别/感谢 (短句, 高置信)
+    const greet = /^(你好|您好|嗨|哈喽|hello|hi|在吗|早上好|晚上好|下午好|再见|拜拜|谢谢|感谢|辛苦了|good\s*(mom|afternoon|evening)|thanks?|bye)\s*[!。？?]*$/i;
+    if (greet.test(m)) {
+      if (/再见|拜拜|bye/i.test(m)) return "再见兄弟, 有事随时喊我。";
+      if (/谢谢|感谢|辛苦/i.test(m)) return "客气啥, 应该的。";
+      return "在的兄弟, 说。";
+    }
+    // 时间/日期
+    if (/^(现在)?(几点|时间|日期|几号|今天|星期几)[!?。？]*$/i.test(m)) {
+      return `[工具] ${await this.tools.call("get_time", {})}`;
+    }
+    // 记忆查询: 你记得XXX / 上次聊过XXX
+    if (/^(你)?(记得|还记得|上次聊过|关于)[:：]?\s*(.+)/i.test(m)) {
+      const q = m.replace(/^(你)?(记得|还记得|上次聊过|关于)[:：]?\s*/i, "").trim();
+      const res = await this.facts.query(q || m, { limit: 3 });
+      return res.length ? "我记得:\n" + res.map(r => `- ${r.content}`).join("\n") : `(记忆里没找到关于"${q || m}"的)`;
+    }
+    // 记住 XX
+    const add = m.match(/^记住[:：]\s*(.+)$/i);
+    if (add) return `[工具] ${await this.tools.call("memory_add", { content: add[1].trim() })}`;
+    // 读文件 / 列目录 (明确工具指令)
+    const read = m.match(/^读文件\s+(.+)$/i);
+    if (read) return `[工具] ${await this.tools.call("read_file", { path: read[1].trim() })}`;
+    const list = m.match(/^列出?\s+(\S+)?$/i);
+    if (list) return `[工具] ${await this.tools.call("list_dir", { path: list[1] || "." })}`;
+    return null;
+  }
+
   async _offlineToolRoute(userMsg) {
     const m = String(userMsg).trim();
     const read = m.match(/^读文件\s+(.+)$/i);

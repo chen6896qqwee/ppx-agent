@@ -52,16 +52,46 @@ export class FactStore {
     return fact;
   }
 
+  // ---- 分词(中文按词/英文按token) + 相似度 ----
+  _tokenize(s) {
+    const cjk = (String(s || "").match(/[\u4e00-\u9fff]+/g) || [])
+      .flatMap(w => (w.length >= 2 ? [w] : [])); // 中文: 两字及以上才算词, 避免单字噪声
+    const en = (String(s || "").toLowerCase().match(/[a-z0-9]+/g) || []);
+    return { cjk, en, all: new Set([...cjk, ...en]) };
+  }
+
+  // Jaccard 相似度: |交集|/|并集|
+  _jaccard(a, b) {
+    const u = new Set([...a, ...b]);
+    if (u.size === 0) return 0;
+    let inter = 0;
+    for (const x of a) if (b.has(x)) inter += 1;
+    return inter / u.size;
+  }
+
+  // 检索: 关键词(子串) + 分词共现 + Jaccard 模糊 + 衰减分排序
+  // 相比纯子串匹配, 召回大幅提升: "量化" 能命中 "我搞量化交易"
   // 检索: 简单关键词 + 衰减分排序
   query(q, { limit = 5, minScore = 1 } = {}) {
     const nowD = this._nowDays();
-    const ql = q.toLowerCase();
+    const ql = (q || "").toLowerCase();
+    const qTok = this._tokenize(ql);
+    const qAll = qTok.all;
     const scored = [];
     for (const f of this.facts) {
       const days = Math.max(0, nowD - new Date(f.lastAccess).getTime() / 86400000);
       let score = this._decay(f.score, days);
-      // 关键词相关加成
-      if (ql && f.content.toLowerCase().includes(ql)) score += 10;
+      const fc = f.content.toLowerCase();
+      // 1) 子串命中 (强信号)
+      if (ql && fc.includes(ql)) score += 10;
+      // 2) 分词共现 (每词 +3)
+      const fTok = this._tokenize(fc);
+      let inter = 0;
+      for (const t of qAll) if (fTok.all.has(t)) inter += 1;
+      if (inter > 0) score += inter * 3;
+      // 3) Jaccard 模糊相似 (语义召回)
+      const sim = this._jaccard(qAll, fTok.all);
+      if (sim > 0) score += sim * 15;
       if (score >= minScore) scored.push({ ...f, effectiveScore: score });
     }
     scored.sort((a, b) => b.effectiveScore - a.effectiveScore);

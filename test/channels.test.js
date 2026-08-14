@@ -3,6 +3,15 @@ import test from "node:test";
 import assert from "node:assert";
 import { startServer } from "../src/server.js";
 
+// stub LLM: 对话测试不依赖真实网络/API key
+function stubLLM() {
+  return {
+    chat: async () => ({ content: "[stub] 你好, 兄弟!" }),
+    streamChat: async (_m, { onDelta } = {}) => { onDelta && onDelta("[stub] 你好, 兄弟!"); return "[stub] 你好, 兄弟!"; },
+    apiChat: async () => ({ message: { role: "assistant", content: "[stub] 你好, 兄弟!", tool_calls: null } }),
+  };
+}
+
 test("HTTP 通道: 启动 + /health", async () => {
   const { server } = await startServer({ root: process.cwd(), port: 8911, host: "127.0.0.1" });
   const r = await fetch("http://127.0.0.1:8911/health");
@@ -13,7 +22,7 @@ test("HTTP 通道: 启动 + /health", async () => {
 });
 
 test("HTTP 通道: POST /message 对话", async () => {
-  const { server, agent } = await startServer({ root: process.cwd(), port: 8912, host: "127.0.0.1" });
+  const { server, agent } = await startServer({ root: process.cwd(), port: 8912, host: "127.0.0.1", llm: stubLLM() });
   const r = await fetch("http://127.0.0.1:8912/message", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

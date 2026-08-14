@@ -132,3 +132,25 @@ test("selfmod: enable/disable/load_skill 全链路", async () => {
   const off = await c.call("load_skill", { id: "ppx-memory" });
   assert.ok(off.includes("已禁用"));
 });
+
+
+test("内核自主决策: localIntent 本地拦截简单指令", async () => {
+  const { PPXAgent } = await import("../src/agent/index.js");
+  const a = new PPXAgent({ root: ROOT });
+  // 问候: 本地回复, 不调 LLM
+  const g = await a._localIntent("你好");
+  assert.ok(g && !g.includes("[工具错误]"), "问候应本地回复, got: " + g);
+  // 时间
+  const tm = await a._localIntent("现在几点");
+  assert.ok(tm && !tm.includes("[工具错误]"), "时间走本地 get_time");
+  // 记住
+  const mem = await a._localIntent("记住: 测试记忆-火锅");
+  assert.ok(mem && !mem.includes("[工具错误]"), "记住走本地 memory_add");
+  // 读文件
+  const rd = await a._localIntent("读文件 README.md");
+  assert.ok(rd && rd.includes("皮皮虾"), "读文件走本地工具");
+  // 复杂问题: 不拦截, 返回 null 走 LLM
+  const complex = await a._localIntent("帮我分析一下今天的A股市场");
+  assert.equal(complex, null, "复杂问题不拦截");
+  a.shutdown();
+});

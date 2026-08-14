@@ -2,7 +2,7 @@
 // 后端两种模式:
 //   backend="openclaw" : 通过 `openclaw agent` CLI 驱动 OpenClaw 引擎 (底座=OpenClaw)
 //   backend="http"     : 直接 OpenAI 兼容 HTTP API (零依赖, 用 fetch)  [默认]
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -24,6 +24,46 @@ export class LLMClient {
     this.sessionKey = provider.session_key || "ppx:main";
     this._tmpCounter = 0;
     if (this.backend === "openclaw") info(`LLMClient[${this.providerId}] backend=openclaw mjs=${this.mjs} session=${this.sessionKey}`);
+  }
+
+  // ===== OpenClaw 后端异步版 (async spawn, 不阻塞事件循环) ====
+  async _openclawChatAsync(messages) {
+    const lastUser = [...messages].reverse().find(m => m && (m.role === "user"));
+    const text = lastUser?.content || "";
+    const tmp = path.join(os.tmpdir(), `ppx_msg_${Date.now()}_${this._tmpCounter++}.txt`);
+    fs.writeFileSync(tmp, String(text), "utf8");
+    try {
+      const args = [
+        this.mjs, "agent",
+        "--session-key", this.sessionKey,
+        "--message-file", tmp,
+        "--json",
+        "--timeout", String(Math.floor(this.timeoutMs / 1000)),
+      ];
+      const stdout = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", d => out += d);
+        child.stderr.on("data", d => err += d);
+        child.on("error", reject);
+        child.on("close", code => {
+          if (code !== 0) reject(new Error(`openclaw 退出 code=${code}: ${err.slice(-500)}`));
+          else resolve(out);
+        });
+      });
+      const j = JSON.parse(stdout);
+      if (j.status && j.status !== "ok") throw new Error(`OpenClaw run status=${j.status}`);
+      const payloads = j?.result?.payloads || [];
+      const content = payloads.map(p => p?.text || "").filter(Boolean).join("\n");
+      if (!content) {
+        const alt = j?.result?.meta?.finalAssistantVisibleText;
+        if (alt) return { content: alt, usage: null };
+        throw new Error("OpenClaw 返回空内容");
+      }
+      return { content, usage: null, meta: { engine: "openclaw", runId: j.runId } };
+    } finally {
+      try { fs.rmSync(tmp, { force: true }); } catch {}
+    }
   }
 
   // ===== OpenClaw 后端: 写临时 UTF-8 消息文件 -> openclaw agent --json -> 提取 payloads[].text ====
@@ -60,7 +100,7 @@ export class LLMClient {
   // 原生 chat (无工具)
   async chat(messages, { temperature = 0.7, maxTokens = 2048 } = {}) {
     if (this.backend === "openclaw") {
-      const r = this._openclawChat(messages);
+      const r = await this._openclawChatAsync(messages);
       return { content: r.content, usage: r.usage };
     }
     const data = await this._request("/chat/completions", { model: this.model, messages, temperature, max_tokens: maxTokens });
@@ -73,7 +113,7 @@ export class LLMClient {
   async apiChat(messages, { tools = [], temperature = 0.7, maxTokens = 4096 } = {}) {
     if (this.backend === "openclaw") {
       // OpenClaw 引擎自己处理工具循环; 这里把引擎当纯 LLM, 不返回 tool_calls
-      const r = this._openclawChat(messages);
+      const r = await this._openclawChatAsync(messages);
       return { message: { role: "assistant", content: r.content, tool_calls: null }, usage: r.usage };
     }
     const body = { model: this.model, messages, temperature, max_tokens: maxTokens };
@@ -122,7 +162,7 @@ export class LLMClient {
   async streamChat(messages, { temperature = 0.7, maxTokens = 4096, onDelta, signal } = {}) {
     if (this.backend === "openclaw") {
       // OpenClaw CLI 非流式: 一次性返回全文 (先可用, 后续可切 SSE)
-      const r = this._openclawChat(messages);
+      const r = await this._openclawChatAsync(messages);
       if (onDelta) onDelta(r.content);
       return r.content;
     }

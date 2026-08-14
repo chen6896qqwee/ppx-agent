@@ -36,3 +36,15 @@
 - 优化: power 权限门禁 (ctx.power 明确提供时生效, 向后兼容)
 - 测试: test/absorb.deepseek.test.js 9 用例全过; 工具相关回归 25/25 全过
 - 零依赖保持, 纯 Node 原生
+
+
+---
+## 后续优化 (2026-08-14 同批完成)
+- P0-1 LLM 异步化: client.js openclaw 后端 execFileSync -> async spawn, 不阻塞事件循环
+- P0-2 记忆检索增强: fact-store 分词(中文词/英文token) + 词共现 + Jaccard 模糊, 召回大幅提升
+- P1-3 traces 追踪: agent 主循环已接通(确认无需改)
+- P1-4 搜索多引擎: tavily/brave(有key优先) + DDG加固兜底(_stripTags/_decodeDDGUrl/转义)
+- P1-5 测试基建: server.js 支持注入 stub LLM; 网络测试默认跳过(PPX_NET_TEST=1启用); 全量能跑完(56测试 54过2skip)
+- P2-6 legion worker 复用: 已满足(worker常驻+同名复用, 无需改)
+- P2-7 内核自主决策: _localIntent 本地拦截高置信简单指令(问候/时间/记忆/工具), 省LLM调用
+- 测试: absorb.deepseek.test.js 10用例(含localIntent)全过; 全量56测试 54过2skip 0fail

@@ -7,6 +7,7 @@ import { PPXAgent } from "../src/agent/index.js";
 import { Scheduler } from "../src/tools/index.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const NET = process.env.PPX_NET_TEST === "1";
 
 test("agent 注册了进阶工具", () => {
   const a = new PPXAgent({ root: ROOT });
@@ -34,7 +35,7 @@ test("Scheduler 每日时间解析", () => {
   s.remove(job.id);
 });
 
-test("http_request GET 打通", async () => {
+test("http_request GET 打通", { skip: !NET, timeout: 20000 }, async () => {
   const a = new PPXAgent({ root: ROOT });
   const r = await a.tools.call("http_request", { url: "https://api.github.com/zen", method: "GET" });
   const parsed = JSON.parse(r);
@@ -42,7 +43,7 @@ test("http_request GET 打通", async () => {
   a.shutdown();
 });
 
-test("web_search 返回结果", async () => {
+test("web_search 返回结果", { skip: !NET, timeout: 20000 }, async () => {
   const a = new PPXAgent({ root: ROOT });
   const r = await a.tools.call("web_search", { query: "openclaw agent" });
   assert.ok(typeof r === "string");

@@ -4,43 +4,90 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, readJson, writeJson } from "../utils/store.js";
 
-// ---------- 网页搜索 (零依赖, 多引擎兜底) ----------
+// ---------- 网页搜索 (零依赖, 多引擎兜底: tavily/brave[有key] -> DDG) ----------
+// 有 TAVILY_API_KEY / BRAVE_API_KEY 时优先用官方 API, 否则回退加固后的 DDG 解析
+function _stripTags(h) { return String(h || "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").trim(); }
+function _decodeDDGUrl(u) {
+  // DDG 结果链接是 /duckduckgo.html?uddg=<encoded>&rut=...
+  const m = String(u || "").match(/[?&]uddg=([^&]+)/);
+  if (m) { try { return decodeURIComponent(m[1]); } catch {} }
+  return u;
+}
+
 async function searchWeb(query) {
   const q = encodeURIComponent(query);
-  const engines = [
-    // 1. DuckDuckGo HTML (免key, 结构化)
-    async () => {
-      const r = await fetch(`https://html.duckduckgo.com/html/?q=${q}`, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+
+  // 1. Tavily (官方 API, 需 TAVILY_API_KEY)
+  const tavilyKey = process.env.TAVILY_API_KEY;
+  if (tavilyKey) {
+    try {
+      const r = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: tavilyKey, query, max_results: 5 }),
+        signal: AbortSignal.timeout(15000),
       });
-      const html = await r.text();
-      const results = [];
-      const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>(.*?)<\/a>/g;
-      let m;
-      while ((m = re.exec(html)) && results.length < 5) {
-        const title = m[2].replace(/<[^>]+>/g, "").trim();
-        const snippet = m[3].replace(/<[^>]+>/g, "").trim();
-        if (title) results.push({ title, url: m[1], snippet });
+      if (r.ok) {
+        const j = await r.json();
+        const results = (j.results || []).map(x => ({ title: x.title, url: x.url, snippet: x.content }));
+        if (results.length) return results;
       }
-      if (!results.length) throw new Error("ddg empty");
-      return results;
-    },
-    // 2. DuckDuckGo lite
-    async () => {
-      const r = await fetch(`https://lite.duckduckgo.com/lite/?q=${q}`, {
-        headers: { "User-Agent": "Mozilla/5.0" },
-      });
-      const html = await r.text();
-      const results = [];
-      const re = /<a[^>]+rel="nofollow"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>[\s\S]*?<\/td>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/g;
-      return results;
-    },
-  ];
-  let lastErr = null;
-  for (const fn of engines) {
-    try { const r = await fn(); if (r?.length) return r; } catch (e) { lastErr = e; }
+    } catch {}
   }
-  throw new Error(`所有搜索源失败: ${lastErr?.message || "无结果"}`);
+
+  // 2. Brave (官方 API, 需 BRAVE_API_KEY)
+  const braveKey = process.env.BRAVE_API_KEY;
+  if (braveKey) {
+    try {
+      const r = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${q}&count=5`, {
+        headers: { "X-Subscription-Token": braveKey, "Accept": "application/json" },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const results = (j.web?.results || []).map(x => ({ title: x.title, url: x.url, snippet: x.description }));
+        if (results.length) return results;
+      }
+    } catch {}
+  }
+
+  // 3. DuckDuckGo HTML (免key兜底, 加固解析)
+  try {
+    const r = await fetch(`https://html.duckduckgo.com/html/?q=${q}`, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      signal: AbortSignal.timeout(15000),
+    });
+    const html = await r.text();
+    const results = [];
+    // 每次抓一个 result 块: <a class="result__a" href="...">title<\/a> ... <a class="result__snippet"...>snippet<\/a>
+    const re = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+    let m;
+    while ((m = re.exec(html)) && results.length < 5) {
+      const title = _stripTags(m[2]);
+      const snippet = _stripTags(m[3]);
+      if (title) results.push({ title, url: _decodeDDGUrl(m[1]), snippet });
+    }
+    if (results.length) return results;
+  } catch {}
+
+  // 4. DuckDuckGo lite (最终兜底)
+  try {
+    const r = await fetch(`https://lite.duckduckgo.com/lite/?q=${q}`, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(15000),
+    });
+    const html = await r.text();
+    const results = [];
+    const re = /<a[^>]+class="result-link"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+    let m;
+    while ((m = re.exec(html)) && results.length < 5) {
+      const title = _stripTags(m[2]);
+      if (title) results.push({ title, url: _decodeDDGUrl(m[1]), snippet: "" });
+    }
+    if (results.length) return results;
+  } catch {}
+
+  throw new Error("所有搜索源失败: 无结果");
 }
 
 // ---------- HTTP 请求 ----------
