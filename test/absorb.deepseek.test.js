@@ -154,3 +154,49 @@ test("内核自主决策: localIntent 本地拦截简单指令", async () => {
   assert.equal(complex, null, "复杂问题不拦截");
   a.shutdown();
 });
+
+
+test("L4: trimToolResult 裁剪超长工具结果", async () => {
+  const { trimToolResult } = await import("../src/agent/index.js");
+  const long = "x".repeat(10000);
+  const r = trimToolResult(long);
+  assert.ok(r.includes("结果已裁剪"), "超长结果应被裁剪");
+  assert.ok(r.length < 5000, "裁剪后应短");
+  assert.ok(r.includes("x".repeat(100)), "保留头部内容");
+  assert.equal(trimToolResult("abc"), "abc", "短结果不裁剪");
+});
+
+test("L5: create_skill 沉淀新技能", async () => {
+  const { ToolCatalog, registerSelfmodTools } = await import("../src/tools/index.js");
+  const { SkillLoader } = await import("../src/skills/loader.js");
+  const c = new ToolCatalog();
+  const skillsDir = path.join(ROOT, "data", "tmp-skills");
+  registerSelfmodTools(c, { skillsDir });
+  const r = await c.call("create_skill", { name: "test-skill", description: "测试技能", content: "# 测试\n步骤1\n步骤2" });
+  assert.ok(r.includes("已创建技能"), "创建成功");
+  // loader 能发现
+  const l = new SkillLoader(skillsDir);
+  assert.ok(l.has("test-skill"), "新技能被 loader 发现");
+  const loaded = l.read("test-skill");
+  assert.ok(loaded.includes("步骤1"), "内容正确");
+  // 非法名拒绝
+  const bad = await c.call("create_skill", { name: "../evil", description: "x", content: "y" });
+  assert.ok(bad.includes("仅允许"), "非法名应拒绝");
+});
+
+test("Session Replay: 从 l0 恢复会话历史", async () => {
+  const { PPXAgent } = await import("../src/agent/index.js");
+  const a = new PPXAgent({ root: ROOT });
+  // 写入一条 l0 记录
+  a.l0.record({ role: "user", content: "皮皮虾帮我记住复盘的节奏", sessionKey: "replaytest" });
+  a.l0.record({ role: "assistant", content: "好的, 已记住", sessionKey: "replaytest" });
+  const hist = a.replaySession("replaytest", { days: 1, limit: 10 });
+  assert.ok(hist.length >= 2, "能恢复历史, got " + hist.length);
+  assert.ok(hist.some(m => m.content.includes("复盘的节奏")), "内容正确");
+  // 工具调用可达
+  const c = new ToolCatalog();
+  registerSelfmodTools(c, { skillsDir: path.join(ROOT, "skills") });
+  const r = await c.call("replay_session", { sessionKey: "replaytest", days: 1 }, { agent: a });
+  assert.ok(r.includes("复盘的节奏"), "replay_session 工具可读");
+  a.shutdown();
+});

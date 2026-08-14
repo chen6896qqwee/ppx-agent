@@ -48,3 +48,11 @@
 - P2-6 legion worker 复用: 已满足(worker常驻+同名复用, 无需改)
 - P2-7 内核自主决策: _localIntent 本地拦截高置信简单指令(问候/时间/记忆/工具), 省LLM调用
 - 测试: absorb.deepseek.test.js 10用例(含localIntent)全过; 全量56测试 54过2skip 0fail
+
+
+---
+## Harness 架构吸收 (2026-08-14 第二批: 五层模型对表)
+- L4 toolResultBudget: agent/index.js 加 TOOL_RESULT_BUDGET=4000 + trimToolResult(头70%/尾30%裁剪), 工具结果防撑爆上下文
+- L5 自动创建 Skill: selfmod 加 create_skill 工具(name白名单校验/防路径穿越/写SKILL.md/自动被loader发现)
+- Session Replay: agent.replaySession(从l0 JSONL按天恢复会话历史) + selfmod 加 replay_session 工具
+- 测试: absorb.deepseek.test.js 13用例全过; 全量59测试 57过2skip 0fail

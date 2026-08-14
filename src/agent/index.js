@@ -15,12 +15,22 @@ import { Traces } from "../utils/trace.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAX_TOOL_ROUNDS = 8;
+const TOOL_RESULT_BUDGET = 4000; // L4 toolResultBudget: 工具结果超过此长度裁剪, 防撑爆上下文
 const MAX_TOOL_ERROR_RETRY = 2;
 const MAX_SESSION_HISTORY = 20;   // ??????????(??)
 const HISTORY_TOKEN_BUDGET = 4000; // ????? token ??????
 
 // ?? token ??: ???1???0.6token, ??1token?4??
 function estimateTokens(s){ return Math.ceil(String(s||'').length / 1.6); }
+
+// L4 toolResultBudget: 裁剪超长工具结果, 保留头尾关键信息
+export function trimToolResult(r) {
+  const s = String(r || "");
+  if (s.length <= TOOL_RESULT_BUDGET) return s;
+  const head = s.slice(0, TOOL_RESULT_BUDGET * 0.7);
+  const tail = s.slice(-TOOL_RESULT_BUDGET * 0.3);
+  return head + `\n...[结果已裁剪: 共 ${s.length} 字符, 保留头尾 ${TOOL_RESULT_BUDGET}]...\n` + tail;
+}
 
 export class PPXAgent {
   constructor({ root = ROOT, configFile = null } = {}) {
@@ -348,7 +358,7 @@ export class PPXAgent {
             durationMs: Date.now() - t0,
             error: result.startsWith(TOOL_ERROR_PREFIX) ? result : null,
           });
-          messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+          messages.push({ role: "tool", tool_call_id: tc.id, content: trimToolResult(result) });
           if (result.startsWith(TOOL_ERROR_PREFIX)) errors.push(result);
         }
       }
@@ -395,6 +405,22 @@ export class PPXAgent {
     const list = m.match(/^列出?\s+(\S+)?$/i);
     if (list) return `[工具] ${await this.tools.call("list_dir", { path: list[1] || "." })}`;
     return null;
+  }
+
+  // ---- Session Replay: 从 l0 原始日志恢复某会话历史 (跨天/崩溃续跑) ----
+  replaySession(sessionKey = "default", { days = 7, limit = 40 } = {}) {
+    const msgs = [];
+    const now = new Date();
+    for (let d = days - 1; d >= 0; d--) {
+      const day = new Date(now.getTime() - d * 86400000).toISOString().slice(0, 10);
+      const recs = this.l0.read(day, 2000);
+      for (const r of recs) {
+        if (r.sessionKey !== sessionKey) continue;
+        if (r.role === "user" || r.role === "assistant") msgs.push({ role: r.role, content: r.content, ts: r.timestamp });
+      }
+    }
+    msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    return msgs.slice(-limit).map(({ role, content }) => ({ role, content }));
   }
 
   async _offlineToolRoute(userMsg) {

@@ -2,6 +2,8 @@
 // 参考 deepseek-harness 的 self-modification: agent 能检查/挂载/卸载自己的运行时能力
 // 这里落地为"能力级自修改": 枚举能力(工具+技能) / 启用 / 禁用 / 加载技能, 不破坏零依赖内核
 import { SkillLoader } from "../skills/loader.js";
+import fs from "node:fs";
+import path from "node:path";
 
 function capErr(name, msg) {
   return `[工具错误] ${name}: ${msg}`;
@@ -75,6 +77,63 @@ export function registerSelfmodTools(catalog, { skillsDir }) {
       const content = loader.read(args.id);
       if (content === null) return capErr("load_skill", `未知技能: ${args.id}`);
       return `# ${args.id}\n\n${content}`;
+    },
+  });
+
+  // 5. 创建新技能 (L5 auto-skill: 复杂任务后沉淀为可复用 Skill)
+  catalog.register({
+    name: "create_skill",
+    description: "把一次成功的方法/流程沉淀为可复用的 Agent Skill。name=技能名(字母数字横线), description=一句话说明, content=SKILL.md 正文(建议含步骤/示例)。写进 skills/ 目录后自动被 loader 发现。",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "技能名, 仅字母/数字/横线" },
+        description: { type: "string", description: "技能一句话说明" },
+        content: { type: "string", description: "SKILL.md 正文" },
+      },
+      required: ["name", "description", "content"],
+    },
+    category: "selfmod",
+    power: "agent",
+    execute: async (args) => {
+      const name = String(args.name || "").trim();
+      if (!/^[a-zA-Z0-9-]+$/.test(name)) return "[工具错误] create_skill: 技能名仅允许字母/数字/横线: " + name;
+      const desc = String(args.description || "").trim();
+      const content = String(args.content || "").trim();
+      if (!desc || !content) return "[工具错误] create_skill: 需 description + content";
+      const dir = path.join(skillsDir, name);
+      fs.mkdirSync(dir, { recursive: true });
+      const frontmatter = "---" + "\n" + "name: " + name + "\n" + "description: " + desc + "\n" + "---" + "\n" + "\n";
+      fs.writeFileSync(path.join(dir, "SKILL.md"), frontmatter + content, "utf8");
+      return "已创建技能: " + name + " (skills/" + name + "/SKILL.md)";
+    },
+  });
+
+  // 6. Session Replay: 从原始日志恢复会话历史 (跨天/崩溃续跑)
+  catalog.register({
+    name: "replay_session",
+    description: "从原始对话日志恢复某会话的历史(跨天/崩溃后续跑)。sessionKey=会话名(默认default), days=回溯天数(默认7), limit=返回条数(默认40)。",
+    parameters: {
+      type: "object",
+      properties: {
+        sessionKey: { type: "string", description: "会话名, 默认 default" },
+        days: { type: "number", description: "回溯天数, 默认 7" },
+        limit: { type: "number", description: "返回条数, 默认 40" },
+      },
+      required: [],
+    },
+    category: "selfmod",
+    power: "user",
+    idempotent: true,
+    execute: async (args, ctx) => {
+      const agent = ctx && ctx.agent;
+      if (!agent || !agent.l0) return capErr("replay_session", "无 l0 记录器");
+      const msgs = agent.replaySession((args && args.sessionKey) || "default", {
+        days: Number(args && args.days) || 7,
+        limit: Number(args && args.limit) || 40,
+      });
+      if (!msgs.length) return "(该会话无历史记录)";
+      return msgs.map(m => `${m.role}: ${m.content}`).join("\n");
     },
   });
 
