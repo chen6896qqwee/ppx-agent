@@ -157,6 +157,37 @@ export class LLMClient {
     return undefined;
   }
 
+  // ===== Provider 健康探测 (Harness 化: 并发探测可用性, 支持快速失败) =====
+  // openclaw 后端: 校验本地 Node 版本是否满足引擎要求 (>=22.22.3 / >=24.15 / >=25.9)
+  // http 后端: 快速探测 /models (3s 超时), 不发完整请求
+  async health() {
+    if (this.backend === "openclaw") {
+      const v = process.versions.node.split(".").map(Number);
+      const [maj, min, pat] = v;
+      const ok =
+        (maj === 22 && (min > 22 || (min === 22 && pat >= 3))) ||
+        (maj === 24 && min >= 15) ||
+        (maj === 25 && min >= 9) || maj > 25;
+      if (!ok) info("[health] openclaw 不可用: Node v" + process.versions.node + " 不满足引擎要求");
+      return ok;
+    }
+    if (!this.apiKey) return false;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 3000);
+      const r = await fetch(this.baseUrl + "/models", {
+        headers: { "Authorization": "Bearer " + this.apiKey },
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      return r.ok;
+    } catch (e) {
+      warn("[health] " + this.providerId + " 探测失败:", e.message);
+      return false;
+    }
+  }
+
+
   // 流式 chat: 逐块回调 (SSE), 返回累积文本
   // onDelta(content) 每次增量, onDone(full) 结束
   async streamChat(messages, { temperature = 0.7, maxTokens = 4096, onDelta, signal } = {}) {

@@ -26,3 +26,18 @@
 ### 验证
 - 测试: 58 过 0 失败 2 跳过 (网络型) + channels 3 过
 - LLM 链: 本机 Node v26.4.0 满足 OpenClaw (>=25.9.0), `通了` 实测通过
+
+
+## v0.4.2 (2026-08-14) — 测试修复 + fetch_page + Provider 健康探测
+
+### 修复
+- **channels 测试**: 固定端口(EADDRINUSE) + 缺少鉴权 token(401) → 改动态端口(0) + 读取自动生成的 authToken。`test/channels.test.js`
+- **测试全绿**: 67 测试 65 过 0 失败 2 跳过(网络型)
+
+### 新增
+- **fetch_page 工具**: 抓网页正文转纯文本(去 script/nav/footer, 截断), 复用 httpRequest 的 SSRF 防护, 配合 web_search 让 agent 能读网页内容作答。`src/tools/advanced.js`
+- **LLMClient.health()**: 并发健康探测 — openclaw 后端校验 Node 版本(>=22.22.3/>=24.15/>=25.9), http 后端 3s 探测 /models。`src/llm/client.js`
+- **_llmWithFallback 并发探测**: 多 provider 时先并发 health() 跳过不可用项, 避免串行等待 180s 超时(最坏 15 分钟 → 秒级)。`src/agent/index.js`
+
+### 验证
+- 新增 test/fetch-page.test.js + test/health.test.js

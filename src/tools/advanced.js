@@ -140,6 +140,23 @@ async function httpRequest({ url, method = "GET", headers = {}, body = null, tim
   }
 }
 
+
+// ---------- 网页正文提取 (fetch_page: 抓正文转纯文本, 配合 web_search 读网页) ----------
+function _htmlToText(html) {
+  const s0 = String(html || "");
+  // 去掉 script/style/nav/footer/header 噪音
+  let out = s0.replace(/<script[\s\S]*?<\/script>/gi, " ")
+              .replace(/<style[\s\S]*?<\/style>/gi, " ")
+              .replace(/<(script|style|nav|footer|header|iframe|form|button|svg)[^>]*>[\s\S]*?<\/\1>/gi, " ");
+  out = out.replace(/<br\s*\/?>|<\/p>|<\/div>|<\/li>|<\/h[1-6]>|<\/tr>/gi, "\n");
+  out = out.replace(/<[^>]+>/g, " ");                     // 去掉所有标签
+  out = out.replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&")
+           .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+           .replace(/&quot;/gi, '"').replace(/&#39;|&#x27;/gi, "'");
+  out = out.replace(/\s+/g, " ");                          // 压缩空白
+  return out.trim();
+}
+
 // ---------- 定时任务 ----------
 export class Scheduler {
   constructor(dataDir) {
@@ -273,6 +290,30 @@ export function registerAdvancedTools(catalog, { dataDir, scheduler, onMemoryNot
     execute: async () => {
       if (!scheduler) return "调度器未初始化";
       return JSON.stringify(scheduler.list());
+    },
+  });
+
+
+  catalog.register({
+    name: "fetch_page",
+    description: "抓取一个网页的正文并转成纯文本 (截断到 20000 字符)。用于读文章/文档/新闻内容后回答问题。",
+    parameters: {
+      type: "object",
+      properties: { url: { type: "string", description: "要抓取的网页 URL" }, maxChars: { type: "number", description: "返回最大字符数, 默认 20000" } },
+      required: ["url"],
+    },
+    execute: async (args) => {
+      try {
+        const timeout = 15000;
+        const r = await httpRequest({ url: args.url, timeout });
+        if (!r.ok) return JSON.stringify({ error: "抓取失败 HTTP " + r.status });
+        const text = _htmlToText(r.body);
+        const max = Math.min(args.maxChars || 20000, 40000);
+        const truncated = text.length > max ? text.slice(0, max) + "\n...[已截断, 共 " + text.length + " 字符]" : text;
+        return JSON.stringify({ url: args.url, status: r.status, chars: text.length, content: truncated });
+      } catch (e) {
+        return JSON.stringify({ error: "fetch_page 失败: " + e.message });
+      }
     },
   });
 

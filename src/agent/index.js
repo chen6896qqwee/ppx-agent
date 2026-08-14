@@ -313,8 +313,19 @@ export class PPXAgent {
   }
 
   // 多 provider 回退: 依次尝试, 失败切下一个
+  // 多 provider 并发健康探测 + 回退: 只对可用 provider 调用, 避免串行等待 180s 超时
   async _llmWithFallback(seedMessages) {
-    const clients = this.allProviders.length ? this.allProviders : [this.llm];
+    let clients = this.allProviders.length ? this.allProviders : [this.llm];
+    if (clients.length > 1) {
+      try {
+        const states = await Promise.all(clients.map((c) => c.health ? c.health() : Promise.resolve(true)));
+        const healthy = clients.filter((_, i) => states[i]);
+        if (healthy.length) clients = healthy;
+        else info("所有 provider 健康探测失败, 按原配置顺序尝试兜底");
+      } catch (e) {
+        warn("health 探测异常, 按原顺序回退:", e.message);
+      }
+    }
     let lastErr = null;
     for (const client of clients) {
       try {
