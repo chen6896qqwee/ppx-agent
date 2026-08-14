@@ -177,6 +177,19 @@ export class HttpChannel extends Channel {
       }
 
       // ---- 静态界面 + 可观测 API ----
+      // 通用静态文件服务 (public/ 下任意文件, 含 vendor/ 资源, 防路径穿越)
+      if (req.method === "GET" && !reqPath.startsWith("/api/") && !["/message","/message/stream","/chat","/reset"].some(p=>reqPath===p)) {
+        const rel = reqPath === "/" ? "index.html" : reqPath.replace(/^\//, "");
+        const file = path.resolve(this.publicDir, rel);
+        if (file.startsWith(this.publicDir + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile()) {
+          const ext = path.extname(file).toLowerCase();
+          const mime = { ".html":"text/html; charset=utf-8", ".js":"text/javascript", ".css":"text/css", ".json":"application/json", ".png":"image/png", ".jpg":"image/jpeg", ".svg":"image/svg+xml", ".ico":"image/x-icon" }[ext] || "application/octet-stream";
+          res.writeHead(200, { "Content-Type": mime });
+          res.end(fs.readFileSync(file));
+          return;
+        }
+        if (reqPath !== "/") { res.writeHead(404); res.end("not found"); return; }
+      }
       // 静态页面
       if (req.method === "GET" && (reqPath === "/" || reqPath === "/index.html")) {
         const html = path.join(this.publicDir, "index.html");

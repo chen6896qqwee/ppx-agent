@@ -16,6 +16,9 @@ export class FactStore {
       ...opts,
     };
     this.facts = readJson(this.file, []);
+    // 倒排索引: token -> Set<factId>, 检索 O(n) -> O(候选)
+    this._index = new Map();
+    for (const fact of this.facts) this._indexFact(fact);
     this.save();
   }
 
@@ -48,8 +51,31 @@ export class FactStore {
       hits: 0,
     };
     this.facts.push(fact);
+    this._indexFact(fact);
     this.save();
     return fact;
+  }
+
+  // 字符级索引 key: 中文拆单字 + 英文按 token (对中文检索才有效)
+  _charKeys(s) {
+    const chars = (String(s).match(/[\u4e00-\u9fff]/g) || []); // 中文单字
+    const en = (String(s).toLowerCase().match(/[a-z0-9]+/g) || []); // 英文/数字 token
+    return new Set([...chars, ...en]);
+  }
+
+  // 倒排索引: 把一条事实的字符 key 挂到索引 (key -> factId)
+  _indexFact(fact) {
+    for (const k of this._charKeys(fact.content)) {
+      if (!this._index.has(k)) this._index.set(k, new Set());
+      this._index.get(k).add(fact.id);
+    }
+  }
+
+  // 重建索引 (facts 外部变更后调用)
+  rebuildIndex() {
+    this._index = new Map();
+    for (const fact of this.facts) this._indexFact(fact);
+    return this._index.size;
   }
 
   // ---- 分词(中文按词/英文按token) + 相似度 ----
@@ -77,8 +103,22 @@ export class FactStore {
     const ql = (q || "").toLowerCase();
     const qTok = this._tokenize(ql);
     const qAll = qTok.all;
+    // 倒排索引候选集: 至少命中一个查询字符 key 的事实 (无命中则回退全量保证召回)
+    let candidates = this.facts;
+    const qKeys = this._charKeys(q);
+    if (qKeys.size > 0 && this._index && this._index.size) {
+      const candIds = new Set();
+      for (const k of qKeys) {
+        const ids = this._index.get(k);
+        if (ids) for (const id of ids) candIds.add(id);
+      }
+      // 阈值保护: 候选过散(命中常见字)则直接全量, 防索引退化
+      if (candIds.size > 0 && candIds.size <= this.facts.length * 0.9) {
+        candidates = this.facts.filter((f) => candIds.has(f.id));
+      }
+    }
     const scored = [];
-    for (const f of this.facts) {
+    for (const f of candidates) {
       const days = Math.max(0, nowD - new Date(f.lastAccess).getTime() / 86400000);
       let score = this._decay(f.score, days);
       const fc = f.content.toLowerCase();

@@ -41,3 +41,20 @@
 
 ### 验证
 - 新增 test/fetch-page.test.js + test/health.test.js
+
+
+## v0.4.3 (2026-08-14) — 记忆倒排索引 + Web UI 体验优化
+
+### 记忆检索升级 (文档4方向4, P2-1)
+- **fact-store 倒排索引**: 字符级索引(中文单字+英文token) -> Set<factId>, 检索 O(n) 全遍历 -> O(候选)。`src/memory/fact-store.js`
+- 新增 `rebuildIndex()` 支持外部变更后重建
+- 阈值保护: 候选过散(命中常见字)自动回退全量, 防索引退化; 无命中同样回退全量保证召回
+- 新增 test/inverted-index.test.js (5 用例)
+
+### Web UI 体验优化 (P2-5)
+- **主题跟随系统**: 固定暗色 -> `prefers-color-scheme` 深浅两套 CSS 变量, 自动适配 light/dark IDE
+- **marked 本地化**: 下载 marked.min.js 到 public/vendor/, 离线可用, 不再依赖 CDN
+- **场景新建改表单**: prompt() 弹窗 -> modal 表单(名称/介绍/能力), 支持 Esc/点遮罩关闭
+- **移动端响应式**: 窄屏(<=768px)侧栏变抽屉, 右上角"面板"按钮切换
+- **http.js 通用静态服务**: 支持 public/ 子目录(vendor/), 含路径穿越防护
+- 修复 esc() 重复定义
