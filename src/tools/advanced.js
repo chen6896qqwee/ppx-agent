@@ -1,6 +1,8 @@
 ﻿// src/tools/advanced.js - 进阶工具集 (搜索 / HTTP / 定时任务)
 // 全部零依赖: 用 Node 原生 fetch + timers
 import fs from "node:fs";
+import net from "node:net";
+import dns from "node:dns/promises";
 import path from "node:path";
 import { ensureDir, readJson, writeJson } from "../utils/store.js";
 
@@ -90,8 +92,38 @@ async function searchWeb(query) {
   throw new Error("所有搜索源失败: 无结果");
 }
 
-// ---------- HTTP 请求 ----------
+// ---------- HTTP 请求 (含 SSRF 防护) ----------
+function isPrivateIP(ip) {
+  if (!ip) return false;
+  const parts = (ip.replace(/^::ffff:/, "")).split(".").map(Number);
+  if (parts.length !== 4) return false;
+  const [a, b] = parts;
+  if (a === 127) return true;
+  if (a === 10) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 0) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  return false;
+}
+
+async function assertPublicUrl(url) {
+  const u = new URL(url);
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("仅允许 http/https");
+  const hostname = u.hostname.replace(/^\[|\]$/g, "");
+  if (net.isIP(hostname)) {
+    if (isPrivateIP(hostname)) throw new Error("SSRF 拒绝: 内网地址 " + hostname);
+    return;
+  }
+  const addrs = await dns.lookup(hostname, { all: true, verbatim: true });
+  for (const { address } of addrs) {
+    if (isPrivateIP(address)) throw new Error("SSRF 拒绝: " + hostname + " 解析到内网 " + address);
+  }
+}
+
 async function httpRequest({ url, method = "GET", headers = {}, body = null, timeout = 15000 }) {
+  await assertPublicUrl(url);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeout);
   try {

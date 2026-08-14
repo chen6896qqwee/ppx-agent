@@ -35,7 +35,7 @@ function isAllowedCommand(cmd, options) {
   if (options && options.allowAll) return true;
   const allowPrefix = (options && options.allowPrefix) || DEFAULT_ALLOW_PREFIX;
   const first = cmd.trim().split(/[\s|&;>]+/)[0];
-  return allowPrefix.some((a) => first.startsWith(a));
+  return allowPrefix.some((a) => (first.toLowerCase().replace(/\.exe$/i, "") === a.toLowerCase()));
 }
 
 // 安全路径: 阻止逃出工作目录 (防路径穿越)

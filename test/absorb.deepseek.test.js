@@ -3,12 +3,17 @@
 import test from "node:test";
 import assert from "node:assert";
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ToolCatalog, registerSelfmodTools, TOOL_ERROR_PREFIX } from "../src/tools/index.js";
 import { SkillLoader } from "../src/skills/loader.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SKILLS = path.join(ROOT, "skills");
+function tmpRoot(n){ return fs.mkdtempSync(path.join(os.tmpdir(), `ppx-${n}-`)); }
+// 复制 ROOT 下文件到临时 root (供需要真实文件内容的测试)
+function copyIn(root, ...names){ for (const n of names) fs.copyFileSync(path.join(ROOT, n), path.join(root, n)); }
 
 test("能力缝: 元数据默认值(category/power/timeout/enabled)", () => {
   const c = new ToolCatalog();
@@ -128,7 +133,7 @@ test("selfmod: enable/disable/load_skill 全链路", async () => {
   const bad = await c.call("load_skill", { id: "nope" });
   assert.ok(bad.includes("未知技能"));
   // 禁用后调用被拒
-  await c.call("disable_capability", { name: "load_skill" });
+  assert.equal(c.disable("load_skill"), true);
   const off = await c.call("load_skill", { id: "ppx-memory" });
   assert.ok(off.includes("已禁用"));
 });
@@ -136,7 +141,8 @@ test("selfmod: enable/disable/load_skill 全链路", async () => {
 
 test("内核自主决策: localIntent 本地拦截简单指令", async () => {
   const { PPXAgent } = await import("../src/agent/index.js");
-  const a = new PPXAgent({ root: ROOT });
+  const root = tmpRoot("abs-local"); copyIn(root, "README.md");
+  const a = new PPXAgent({ root });
   // 问候: 本地回复, 不调 LLM
   const g = await a._localIntent("你好");
   assert.ok(g && !g.includes("[工具错误]"), "问候应本地回复, got: " + g);
@@ -170,7 +176,8 @@ test("L5: create_skill 沉淀新技能", async () => {
   const { ToolCatalog, registerSelfmodTools } = await import("../src/tools/index.js");
   const { SkillLoader } = await import("../src/skills/loader.js");
   const c = new ToolCatalog();
-  const skillsDir = path.join(ROOT, "data", "tmp-skills");
+  const skillsDir = path.join(tmpRoot("abs-skill"), "skills");
+  fs.mkdirSync(skillsDir, { recursive: true });
   registerSelfmodTools(c, { skillsDir });
   const r = await c.call("create_skill", { name: "test-skill", description: "测试技能", content: "# 测试\n步骤1\n步骤2" });
   assert.ok(r.includes("已创建技能"), "创建成功");
@@ -186,7 +193,8 @@ test("L5: create_skill 沉淀新技能", async () => {
 
 test("Session Replay: 从 l0 恢复会话历史", async () => {
   const { PPXAgent } = await import("../src/agent/index.js");
-  const a = new PPXAgent({ root: ROOT });
+  const root = tmpRoot("abs-replay");
+  const a = new PPXAgent({ root });
   // 写入一条 l0 记录
   a.l0.record({ role: "user", content: "皮皮虾帮我记住复盘的节奏", sessionKey: "replaytest" });
   a.l0.record({ role: "assistant", content: "好的, 已记住", sessionKey: "replaytest" });
@@ -195,7 +203,7 @@ test("Session Replay: 从 l0 恢复会话历史", async () => {
   assert.ok(hist.some(m => m.content.includes("复盘的节奏")), "内容正确");
   // 工具调用可达
   const c = new ToolCatalog();
-  registerSelfmodTools(c, { skillsDir: path.join(ROOT, "skills") });
+  registerSelfmodTools(c, { skillsDir: SKILLS });
   const r = await c.call("replay_session", { sessionKey: "replaytest", days: 1 }, { agent: a });
   assert.ok(r.includes("复盘的节奏"), "replay_session 工具可读");
   a.shutdown();

@@ -5,6 +5,7 @@ import fs from "node:fs";
 
 import { Healer } from "../selfheal/healer.js";
 import { FactStore, MemoryTicker, Experience, L0Recorder, SceneStore, PersonaStore } from "../memory/index.js";
+import { SessionStore } from "../memory/session.js";
 import { Persona } from "../persona/index.js";
 import { LLMClient } from "../llm/index.js";
 import { ToolCatalog, registerBuiltinTools, registerAdvancedTools, Scheduler, TOOL_ERROR_PREFIX } from "../tools/index.js";
@@ -17,10 +18,10 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
 const MAX_TOOL_ROUNDS = 8;
 const TOOL_RESULT_BUDGET = 4000; // L4 toolResultBudget: 工具结果超过此长度裁剪, 防撑爆上下文
 const MAX_TOOL_ERROR_RETRY = 2;
-const MAX_SESSION_HISTORY = 20;   // ??????????(??)
+const MAX_SESSION_HISTORY = 20;   // 最大会话历史条数(条)
 const HISTORY_TOKEN_BUDGET = 4000; // ????? token ??????
 
-// ?? token ??: ???1???0.6token, ??1token?4??
+// 估算 token: 中文字符约1字=0.6token, 1token约4字符
 function estimateTokens(s){ return Math.ceil(String(s||'').length / 1.6); }
 
 // L4 toolResultBudget: 裁剪超长工具结果, 保留头尾关键信息
@@ -76,8 +77,9 @@ export class PPXAgent {
     this._interrupted = false;
     this._lastTurnUsedTools = false;
 
-    // ?????? (sessionKey -> [{role,content}]) ????????
-    this.sessions = new Map();
+    // 会话历史 (sessionKey -> [{role,content}]) 注: sessions 已由 SessionStore 落盘
+    this.sessionStore = new SessionStore(this.dataDir);
+    this.sessions = this.sessionStore.cache;
   }
 
 
@@ -217,6 +219,7 @@ export class PPXAgent {
       if (total > HISTORY_TOKEN_BUDGET) { dropFrom = i + 1; break; }
     }
     if (dropFrom > 0) this.sessions.set(sessionKey, hist.slice(dropFrom));
+    if (this.sessionStore) this.sessionStore.set(sessionKey, this._getSession(sessionKey));
   }
 
   _loadHistory(sessionKey) {
@@ -224,7 +227,7 @@ export class PPXAgent {
   }
 
   // 重置某会话历史 (新会话)
-  resetSession(sessionKey) { this.sessions.delete(sessionKey); }
+  resetSession(sessionKey) { this.sessions.delete(sessionKey); this.sessionStore.delete(sessionKey); }
 
   // 组装记忆上下文
   _context(userMsg) {
@@ -238,11 +241,11 @@ export class PPXAgent {
   // 对话主入口 (含工具调用循环)
   async chat(userMsg, { persist = true, sessionKey = "default" } = {}) {
     const system = this._context(userMsg);
-    // ??: [system] + [??] + [??????]
+    // 组装: [system] + [历史] + [当前问题]
     const history = this._loadHistory(sessionKey);
     const messages = [{ role: "system", content: system }, ...history];
 
-    // ????????? user ??(??), ??????
+    // 防止重复: 若上一条已是相同 user 消息则跳过
     const hist = this._getSession(sessionKey);
     const isRepeat = hist[hist.length - 1]?.role === "user" && hist[hist.length - 1].content === String(userMsg);
     if (!isRepeat) messages.push({ role: "user", content: String(userMsg) });

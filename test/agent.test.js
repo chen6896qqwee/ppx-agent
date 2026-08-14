@@ -2,13 +2,15 @@
 import test from "node:test";
 import assert from "node:assert";
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { PPXAgent } from "../src/agent/index.js";
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+function tmpRoot(n){ return fs.mkdtempSync(path.join(os.tmpdir(), `ppx-${n}-`)); }
 
 test("agent 启动 + 自愈", () => {
-  const agent = new PPXAgent({ root: ROOT });
+  const agent = new PPXAgent({ root: tmpRoot("agent") });
   assert.ok(agent.persona, "persona 加载");
   assert.ok(agent.facts, "fact store 加载");
   assert.ok(agent.memory, "memory ticker 加载");
@@ -18,7 +20,7 @@ test("agent 启动 + 自愈", () => {
 });
 
 test("记忆写入与检索", () => {
-  const agent = new PPXAgent({ root: ROOT });
+  const agent = new PPXAgent({ root: tmpRoot("agent") });
   const before = agent.facts.count();
   const f = agent.facts.add("皮皮虾喜欢实时数据胜过猜测", { type: "test" });
   assert.ok(f.id);
@@ -29,7 +31,7 @@ test("记忆写入与检索", () => {
 });
 
 test("experience 学习", () => {
-  const agent = new PPXAgent({ root: ROOT });
+  const agent = new PPXAgent({ root: tmpRoot("agent") });
   agent.experience.learn({ task: "测试", lesson: "零依赖比第三方依赖更稳", tags: ["test"] });
   const recalled = agent.experience.recall("稳定");
   assert.ok(Array.isArray(recalled));
@@ -37,7 +39,7 @@ test("experience 学习", () => {
 });
 
 test("PII 脱敏", async () => {
-  const agent = new PPXAgent({ root: ROOT });
+  const agent = new PPXAgent({ root: tmpRoot("agent") });
   const { scrubPII } = await import("../src/utils/pii.js");
   const r = scrubPII("我的 key 是 sk-abcdefghij1234567890qwerty");
   assert.ok(r.cleaned.includes("[REDACTED]"));
@@ -46,7 +48,7 @@ test("PII 脱敏", async () => {
 });
 
 test("离线聊天 (无 LLM)", async () => {
-  const agent = new PPXAgent({ root: ROOT });
+  const agent = new PPXAgent({ root: tmpRoot("agent") });
   const reply = await agent.chat("你好皮皮虾");
   assert.ok(typeof reply === "string");
   assert.ok(reply.length > 0);

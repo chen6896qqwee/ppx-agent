@@ -3,7 +3,12 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { Channel } from "./base.js";
+
+const MAX_BODY = 1024 * 1024;          // 请求体上限 1MB
+const RATE_PER_MIN = 60;               // 每 IP 每分钟最大请求数 (令牌桶)
+const RATE_WINDOW_MS = 60_000;
 
 export class HttpChannel extends Channel {
   constructor(agent, { port = 8899, host = "127.0.0.1" } = {}) {
@@ -14,6 +19,7 @@ export class HttpChannel extends Channel {
     this.agent = agent;
     this.publicDir = path.join(this.agent.root, "public");
     this.authToken = process.env.PPX_AUTH_TOKEN || this._tokenFromConfig();
+    this._buckets = new Map(); // ip -> {tokens, last}
   }
 
   _tokenFromConfig() {
@@ -27,20 +33,77 @@ export class HttpChannel extends Channel {
     return "";
   }
 
-  // 简单 Bearer 认证中间件 (若配置了 token)
+  // 若未配置 token, 自动生成随机 token 并打印 (类似 Jupyter token)
+  _ensureToken() {
+    if (this.authToken) return this.authToken;
+    this.authToken = crypto.randomBytes(24).toString("hex");
+    const port = this.port;
+    console.log("");
+    console.log("  ⚠️  HTTP 认证 token 未配置, 已自动生成:");
+    console.log(`       PPX_AUTH_TOKEN=${this.authToken}`);
+    console.log(`     用法: Authorization: Bearer ${this.authToken}`);
+    console.log("      (或设置 config/ppx.json 的 channels.http.auth_token)");
+    console.log("");
+    return this.authToken;
+  }
+
   _authed(req, res) {
-    if (!this.authToken) return true;
+    if (!this.authToken) return true; // 兼容旧调用: _ensureToken 在 connect 时已执行
     const h = req.headers["authorization"] || "";
     return h === "Bearer " + this.authToken;
   }
 
+  // 简单令牌桶限流: 每 IP 60 req/min
+  _rateLimit(req, res) {
+    const ip = req.socket?.remoteAddress || "unknown";
+    const now = Date.now();
+    let b = this._buckets.get(ip);
+    if (!b) {
+      b = { tokens: RATE_PER_MIN, last: now };
+      this._buckets.set(ip, b);
+    }
+    const refill = Math.floor((now - b.last) / RATE_WINDOW_MS);
+    if (refill > 0) {
+      b.tokens = Math.min(RATE_PER_MIN, b.tokens + refill * RATE_PER_MIN);
+      b.last = now;
+    }
+    if (b.tokens <= 0) {
+      res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "60" });
+      res.end(JSON.stringify({ error: "rate limited" }));
+      return false;
+    }
+    b.tokens -= 1;
+    return true;
+  }
+
+  // 读取请求体, 限制大小
+  async _readBody(req, res) {
+    let body = "";
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > MAX_BODY) {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "request too large" }));
+        return null;
+      }
+    }
+    return body;
+  }
+
   async connect() {
+    this._ensureToken(); // 启动时确保有 token
     this.server = http.createServer(async (req, res) => {
       // CORS
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
       if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+
+      // 静态页面与 /health 不设限, 其余 API 限流
+      const reqPath = (req.url || "/").split("?")[0];
+      if (!(req.method === "GET" && (reqPath === "/" || reqPath === "/index.html" || reqPath === "/health"))) {
+        if (!this._rateLimit(req, res)) return;
+      }
 
       if (req.method === "GET" && req.url === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -50,8 +113,8 @@ export class HttpChannel extends Channel {
 
       if (req.method === "POST" && req.url === "/message") {
         if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
-        let body = "";
-        for await (const chunk of req) body += chunk;
+        const body = await this._readBody(req, res);
+        if (body === null) return;
         try {
           const data = JSON.parse(body);
           const text = data.message || data.text || "";
@@ -70,8 +133,8 @@ export class HttpChannel extends Channel {
       // SSE 流式对话
       if (req.method === "POST" && (req.url === "/message/stream" || req.url === "/chat")) {
         if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
-        let body = "";
-        for await (const chunk of req) body += chunk;
+        const body = await this._readBody(req, res);
+        if (body === null) return;
         try {
           const data = JSON.parse(body);
           const text = data.message || data.text || "";
@@ -89,7 +152,6 @@ export class HttpChannel extends Channel {
             sessionKey,
             onDelta: (d) => { full += d; try { send({ type: "delta", content: d }); } catch {} },
           });
-          // 若降级非流式, full 可能为空, 用返回的 reply
           const finalContent = full || reply;
           send({ type: "done", content: finalContent, sessionId: sessionKey });
           res.end();
@@ -103,8 +165,8 @@ export class HttpChannel extends Channel {
       // 会话重置
       if (req.method === "POST" && req.url === "/reset") {
         if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
-        let body = "";
-        for await (const chunk of req) body += chunk;
+        const body = await this._readBody(req, res);
+        if (body === null) return;
         try {
           const data = JSON.parse(body || "{}");
           this.agent.resetSession(data.sessionId || "default");
@@ -115,7 +177,6 @@ export class HttpChannel extends Channel {
       }
 
       // ---- 静态界面 + 可观测 API ----
-      const reqPath = (req.url || "/").split("?")[0];
       // 静态页面
       if (req.method === "GET" && (reqPath === "/" || reqPath === "/index.html")) {
         const html = path.join(this.publicDir, "index.html");

@@ -23,8 +23,11 @@
 | ?? Next.js产品壳 | web/ 前端代理8899内核, 聊天+场景+记忆+轨迹+统计 |
 | ☁ **多轮对话历史** | 会话内上下文连续, 滚动截断控 token (P0 修复) |
 | ?? **流式输出** | SSE 逐字流式, Web UI 实时渲染 (P1) |
-| ?? **命令安全** | run_command 黑白名单+高危拦截 (P0 修复) |
-| ?? **HTTP 认证** | Bearer Token 可选, 保护 /message + /api (P1) |
+| ?? **命令安全** | run_command 黑白名单+高危拦截+精确匹配 (P0) |
+| ?? **SSRF 防护** | http_request 拦截内网/保留地址 (P1) |
+| ?? **会话持久化** | 会话 JSONL 落盘, 重启不丢 (P1) |
+| ?? **测试隔离** | 所有测试用临时目录, 不污染生产数据 (P0) |
+| 🔐 **HTTP 认证** | Bearer Token, 未配置自动生成随机token (P0) |
 | ?? **Markdown 渲染** | Web UI marked.js 渲染代码块/列表 (P1) |
 | ? **OpenClaw 底座** | LLM 引擎通过 `openclaw agent` CLI 驱动 OpenClaw, 官方工具/记忆/通道循环可用, 保留多 provider 回退 |
 | ?? **多模型 API 优先** | OpenAI/DeepSeek/火山/通义 + 本地模型兜底 |
@@ -105,7 +108,7 @@ ppx-agent/
 │   ├── agent/      Agent 引擎 (编排 + 工具循环 + 多模型回退)
 │   ├── memory/     L0-L3 四层记忆 + 经验库
 │   ├── selfheal/   自愈引擎
-│   ├── tools/      工具系统 (11个)
+│   ├── tools/      工具系统 (24个)
 │   ├── channels/   通道 (http/feishu/wechat)
 │   ├── orchestrator/ 军团编排器 (多进程)
 │   ├── llm/        LLM 客户端
