@@ -18,8 +18,34 @@ const DATA = process.env.PPX_AML_DATA || path.join(ROOT, "data", "aml");
 const AUTH_SCHEME = (process.env.PPX_AML_AUTH || "none").toLowerCase();
 const AUTH_VALUE = process.env.PPX_AML_AUTH_VALUE || "";
 const MAX_BODY = 1024 * 1024; // 1MB 请求体上限, 防滥用
+const RATE_PER_MIN = 60;      // 每 IP 每分钟最大请求数 (令牌桶, 对齐 http.js)
+const RATE_WINDOW_MS = 60_000;
 
 const store = new FactStore(DATA, {});
+const _buckets = new Map(); // ip -> {tokens, last}
+
+// 简单令牌桶限流: 每 IP 60 req/min (对齐 channels/http.js) [P1#10]
+function rateLimit(req, res) {
+  const ip = req.socket?.remoteAddress || "unknown";
+  const now = Date.now();
+  let b = _buckets.get(ip);
+  if (!b) {
+    b = { tokens: RATE_PER_MIN, last: now };
+    _buckets.set(ip, b);
+  }
+  const refill = Math.floor((now - b.last) / RATE_WINDOW_MS);
+  if (refill > 0) {
+    b.tokens = Math.min(RATE_PER_MIN, b.tokens + refill * RATE_PER_MIN);
+    b.last = now;
+  }
+  if (b.tokens <= 0) {
+    res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "60" });
+    res.end(JSON.stringify({ error: "rate limited" }));
+    return false;
+  }
+  b.tokens -= 1;
+  return true;
+}
 
 function authOk(req) {
   if (AUTH_SCHEME === "none") return true;
@@ -35,11 +61,12 @@ function readBody(req, maxBytes = MAX_BODY) {
     let d = "";
     let tooBig = false;
     req.on("data", (c) => {
+      if (tooBig) return; // 已超限, 丢弃后续数据但不断连 (让 handler 回 413)
       d += c;
-      if (Buffer.byteLength(d) > maxBytes) { tooBig = true; req.destroy(); }
+      if (Buffer.byteLength(d) > maxBytes) { tooBig = true; d = ""; }
     });
     req.on("end", () => {
-      if (tooBig) return resolve(null);
+      if (tooBig) return resolve(null); // handler 据此回 413
       try { resolve(JSON.parse(d)); } catch { resolve(null); }
     });
     req.on("error", () => resolve(null));
@@ -101,17 +128,24 @@ async function handleSearch(req, res) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, "http://x");
-  if (!authOk(req)) return send(res, 401, { error: "unauthorized" });
-  const pathname = url.pathname;
-  if (req.method === "POST" && pathname === "/v1/memories/add") return handleAdd(req, res);
-  if (req.method === "POST" && pathname === "/v1/memories/search") return handleSearch(req, res);
-  if (req.method === "GET" && pathname === "/health") return send(res, 200, { status: "ok" });
-  return send(res, 404, { error: "not found" });
-});
+export function createAmlServer() {
+  return http.createServer(async (req, res) => {
+    const url = new URL(req.url, "http://x");
+    if (!authOk(req)) return send(res, 401, { error: "unauthorized" });
+    if (!rateLimit(req, res)) return;
+    const pathname = url.pathname;
+    if (req.method === "POST" && pathname === "/v1/memories/add") return handleAdd(req, res);
+    if (req.method === "POST" && pathname === "/v1/memories/search") return handleSearch(req, res);
+    if (req.method === "GET" && pathname === "/health") return send(res, 200, { status: "ok" });
+    return send(res, 404, { error: "not found" });
+  });
+}
 
-server.listen(PORT, () => {
-  console.log(`[aml-server] listening on :${PORT} | auth=${AUTH_SCHEME} | data=${DATA}`);
-  console.log(`  POST /v1/memories/add    POST /v1/memories/search    GET /health`);
-});
+// CLI 入口: 直接运行本文件时启动服务器
+if (import.meta.url === `file:///${process.argv[1]?.replace(/\\\\/g, "/")}`) {
+  const server = createAmlServer();
+  server.listen(PORT, () => {
+    console.log(`[aml-server] listening on :${PORT} | auth=${AUTH_SCHEME} | data=${DATA}`);
+    console.log(`  POST /v1/memories/add    POST /v1/memories/search    GET /health`);
+  });
+}

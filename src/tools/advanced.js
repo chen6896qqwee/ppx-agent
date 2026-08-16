@@ -256,7 +256,7 @@ export function registerAdvancedTools(catalog, { dataDir, scheduler, onMemoryNot
 
   catalog.register({
     name: "notify",
-    description: "Send a proactive notification message to the user channel (use for long-running tasks or async completion alerts).",
+    description: "主动向用户通道发送通知消息 (用于长任务或异步完成提醒)。",
     parameters: { type: "object", properties: { message: { type: "string", description: "notification text" } }, required: ["message"] },
     execute: async (args, ctx) => {
       const agent = ctx && ctx.agent;

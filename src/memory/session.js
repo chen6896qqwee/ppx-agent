@@ -23,6 +23,7 @@ export class SessionStore {
     ensureDir(this.dir);
     this._logs = new Map();    // key -> event[] (不可变, append-only)
     this._nextSeq = new Map(); // key -> 下一个 seq
+    this._flushedSeq = new Map(); // key -> 已落盘的最大 seq (增量追加用)
     this._loadAll();
   }
 
@@ -50,6 +51,7 @@ export class SessionStore {
         events.sort((a, b) => a.seq - b.seq);
         this._logs.set(k, events);
         this._nextSeq.set(k, events[events.length - 1].seq);
+        this._flushedSeq.set(k, events[events.length - 1].seq);
       }
     }
   }
@@ -99,6 +101,7 @@ export class SessionStore {
     const k = this._safe(toKey);
     this._logs.set(k, [...keep]);
     this._nextSeq.set(k, keep.length ? keep[keep.length - 1].seq : 0);
+    this._flushedSeq.delete(k);
     this._flush(k);
     return keep;
   }
@@ -110,21 +113,34 @@ export class SessionStore {
   get(key) { return this.deriveMessages(key); }
   set(key, history) {
     const k = this._safe(key);
-    this._logs.delete(k); this._nextSeq.set(k, 0);
+    this._logs.delete(k); this._nextSeq.set(k, 0); this._flushedSeq.delete(k);
     for (const m of (history || [])) this.append(k, m.role === "user" ? EVENTS.USER : EVENTS.ASSISTANT, { content: m.content });
     return history;
   }
   has(key) { return this._logs.has(this._safe(key)); }
   delete(key) {
     const k = this._safe(key);
-    this._logs.delete(k); this._nextSeq.delete(k);
+    this._logs.delete(k); this._nextSeq.delete(k); this._flushedSeq.delete(k);
     try { fs.rmSync(this._file(k), { force: true }); } catch {}
   }
 
+  // 增量落盘: 只追加 flushedSeq 之后的新事件 (P1#5, 消除大会话全量重写)
   _flush(key) {
+    const k = this._safe(key);
+    const evs = this._logs.get(k) || [];
+    if (!evs.length) return;
+    const flushed = this._flushedSeq.get(k) || 0;
+    const pending = evs.filter((e) => e.seq > flushed);
+    if (!pending.length) return;
     try {
-      const evs = this._logs.get(this._safe(key)) || [];
-      fs.writeFileSync(this._file(key), evs.map((e) => JSON.stringify(e)).join("\n") + (evs.length ? "\n" : ""), "utf8");
+      const line = pending.map((e) => JSON.stringify(e)).join("\n") + "\n";
+      if (flushed === 0) {
+        // 首次或重建: 全量覆盖, 保证文件与内存一致 (防残留旧内容)
+        fs.writeFileSync(this._file(k), line, "utf8");
+      } else {
+        fs.appendFileSync(this._file(k), line, "utf8");
+      }
+      this._flushedSeq.set(k, evs[evs.length - 1].seq);
     } catch {}
   }
 }

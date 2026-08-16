@@ -130,6 +130,18 @@
 - combined 让 openclaw 和 dsh 互为冗余, 一个引擎挂了自动切换, 皮皮虾对话不中断
 - 想单独用某个引擎时, 仍可用 backend=openclaw / backend=deepseek 的单引擎 provider
 
+## v0.6.2 (2026-08-16) — 评估报告 P1 修复 (EVALUATION-v0.6-final)
+
+### P1 修复
+- **notify 工具描述中文化** (P1#8): advanced.js 的 notify 描述由英文改为中文, 统一工具描述语言
+- **会话日志增量落盘** (P1#5): session.js _flush 由全量重写改为 appendFileSync 增量追加, 用 _flushedSeq 追踪已落盘进度; 首次/重建时全量覆盖, 消除大会话(1000+条)写放大
+- **AML 限流对齐** (P1#10): aml-server.js 新增 60 req/min 令牌桶限流(对齐 http.js), 超限回 429; 顺带修复 readBody 超限时 req.destroy() 导致客户端 ECONNRESET 而非 413 的真实 bug
+  - aml-server 导出 createAmlServer() 供测试进程内起停, CLI 入口保留
+
+### 验证
+- 全量测试: 99 个 96 过 0 失败 3 跳过 (网络 gate)
+- 新增 session-append.test.js (3, 增量落盘跨实例) + aml-server.test.js (3, Add/Search/413/限流)
+
 ## v0.6.1 (2026-08-16) — 评估报告 P0 修复 (EVALUATION-v0.6-final)
 
 ### P0 修复
