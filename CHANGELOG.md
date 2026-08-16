@@ -58,3 +58,97 @@
 - **移动端响应式**: 窄屏(<=768px)侧栏变抽屉, 右上角"面板"按钮切换
 - **http.js 通用静态服务**: 支持 public/ 子目录(vendor/), 含路径穿越防护
 - 修复 esc() 重复定义
+
+## v0.5.1 (2026-08-15) — 评估报告修复 (EVALUATION-v0.5 P0/P1)
+
+依据 `docs/EVALUATION-v0.5.md` 修复。
+
+### P0 — 环境一致性
+- **Node 版本声明统一**: `package.json` engines 从 `>=20.0.0` 改为实际要求 `>=22.22.3 <23 || >=24.15 <25 || >=25.9` (OpenClaw 引擎真实下限, 且明示 23 与 24.0-24.14 不支持)。`package.json`
+- **health.test.js 参数化**: 抽纯函数 `nodeVersionOk(version)` 导出 (client.js), health() 复用之; 测试不再硬编码当前环境版本断言, 改为版本矩阵参数化, 消除环境可移植性缺陷。`src/llm/client.js` `test/health.test.js`
+
+### P1 — 体验与质量
+- **LLM 失败引导**: openclaw 后端新增 `_openclawReadyOrThrow()` (启动前校验 Node 版本, 不满足抛中文引导) + `_translateOpenclawError()` (将 CLI 版本类报错译为"请升级 Node 至 >=22.22.3 (推荐 26.x)"), 替代原始报错。`src/llm/client.js`
+- **记忆内容去重**: `FactStore.add()` 前按归一化内容 (去空白折叠) 比对, 相同内容已存在则命中加分而非重复新增; 覆盖 addMemory/recordTurn/schedule 笔记。`src/memory/fact-store.js`
+- **corrupt 备份自动清理**: Healer 新增 `cleanupCorruptBackups(keep=2)`, heal() 启动时保留最近 2 个 `.corrupt-*` 备份, 更早自动删除。`src/selfheal/healer.js`
+
+### 语言一致性
+- 修复 `src/agent/index.js:22` 注释乱码 (`????? token ??????` → `会话历史 token 预算`)
+- README 14 处 `??` 残留清零 (→ ✅), 特性标题乱码修复 (→ ✨)
+
+### 验证
+- 全量测试: 73 个, 71 通过 / 0 失败 / 2 跳过 (网络型)。上轮唯一 health 失败已修复
+- 实测: 记忆去重 (相同2条→1条, 不同仍新增)、corrupt 清理 (3→2)
+
+> 未含 openclaw 后端真实流式 (P1-3): openclaw CLI 非流式, 需引擎侧 SSE 支持, 暂保留一次性返回。
+
+## v0.5.2 (2026-08-15) — DeepSeek Harness 底座整合
+
+对比 deepseek-ai/deepseek-harness (110k★, Cordis 插件化 Agent 框架) 后，把 dsh 一次性运行器作为皮皮虾的 LLM 底座后端接入（与既有 OpenClaw 后端并列，可按 provider 切换）。
+
+### 新增 DeepSeek Harness 后端
+- **`src/llm/client.js`**: 新增 `deepseek` 后端 (provider `backend: "deepseek"` 或 `id: "dsh"`)。
+  - `_dshChatAsync()`: 驱动 `node --import tsx/esm apps/cli/src/bin.ts --profile headless "<task>"`，stdout 提取最终助手文本，exit 0=turn 完成 / 1=出错(stderr 带错误)
+  - `_dshReadyOrThrow()`: dsh 源码缺失时抛中文引导
+  - `health()`: 校验 dsh 源码存在 + Node 版本
+  - `chat/apiChat/streamChat` 均接入 deepseek 分支
+- **`src/agent/index.js`**: `_resolveAllLLMs`/`_resolveLLM` 纳入 dsh 后端 (backend=deepseek / id=dsh)
+- **`config/ppx.json`**: 新增 `dsh` provider (dsh_root 指向桌面源码)
+
+### dsh 源码落地
+- `C:\Users\chen\Desktop\deepseek-harness` (master, 7441 文件)
+- 已 `pnpm install` + `pnpm run build:lib:host`（headless 不需 web 前端）
+- 跑通: `dsh --profile headless` 全链路 14s 返回 (DEEPSEEK_API_KEY)
+
+### 验证
+- dsh headless 直连: 返回正常, exit 0
+- 皮皮虾 dsh 后端: health=true, chat 13.8s 返回
+- 皮皮虾全量测试: 73 个 71 过 0 失败 2 跳过
+
+### 待办
+- dsh 首次启动需先 `pnpm install` + `pnpm run build:lib:host`（构建产物在 lib/，typert loader 依赖）
+- 底座切换: 想让皮皮虾用 dsh 当大脑，把 openclaw provider 移到 dsh 之后或临时注释掉
+
+## v0.5.3 (2026-08-15) — openclaw + DeepSeek Harness 合并为统一底座
+
+把 openclaw 后端与 deepseek(dsh) 后端合并成一个 `combined` 底座: 一个大脑按优先级驱动多个 CLI 引擎, 健康探测 + 自动回退。openclaw / deepseek 单引擎后端保留可用。
+
+### 新增 combined 底座
+- **`src/llm/client.js`**: `backend: "combined"` 时构建 `subClients` (provider.engines 数组), 新增 `_combinedCall(fn)`:
+  - 先并发 health() 过滤不可用引擎, 全挂则按原顺序兜底
+  - 依次调用, 失败自动回退下一个, 抛最后错误
+  - chat / apiChat / streamChat / health 全部接入 combined 分支
+- **`config/ppx.json`**: 新增 `brain` provider (backend=combined, engines=[openclaw, dsh]), 排第一为默认底座
+- **`test/combined.test.js`**: 新增 5 个合并底座单元测试 (subClients 构建/health/无engines引导/失败回退/顺序短路)
+
+### 验证
+- 合并底座: health=true, chat 14.9s 走 openclaw 正常返回
+- 故障回退实测: openclaw 引擎故意损坏 -> 自动切 dsh -> 13.1s 正常返回
+- 皮皮虾全量测试: 78 个 76 过 0 失败 2 跳过
+
+### 说明
+- combined 让 openclaw 和 dsh 互为冗余, 一个引擎挂了自动切换, 皮皮虾对话不中断
+- 想单独用某个引擎时, 仍可用 backend=openclaw / backend=deepseek 的单引擎 provider
+
+## v0.6.0 (2026-08-15) — 新架构: 吸收 DeepSeek Harness 设计原则 + openclaw 为唯一底座引擎
+
+应兄弟要求: 不要套两个引擎的路由器, 而是吸收两者优势合并成一个新架构。定案:
+**一个底座 (新架构内核) + 一个可插拔引擎接缝 (openclaw 默认)**。
+
+### 吸收 dsh 的三大设计原则
+1. 会话即唯一事实源 (model-visible means logged): src/memory/session.js 从覆盖式 JSONL 重写为不可变 append-only 事件日志 (每条 seq/ts/type/data)。
+   - 模型可见历史 = deriveMessages() 从日志投影 (无可变状态, 仅从日志重建)
+   - replay() 回放完整事件流 | fork() 从边界派生新会话 | 事件域 user/assistant/system/tool
+   - 老格式文件优雅跳过 (不崩), 新写自动用事件格式
+2. 引擎 = 可插拔接缝 (Service|Provider|Consumer): LLM 后端 (openclaw/deepseek/http) 是单一底座后面的可换服务, 由 config provider 决定, 不再有组合路由器
+3. 分层配置可覆盖: config provider 顺序即优先级, 引擎可换
+
+### 架构收敛
+- 移除 combined wrapper (两个引擎的路由器, 违反单个底座), 删除 test/combined.test.js
+- 唯一默认底座引擎 = openclaw (config 第一), deepseek(dsh) 保留为可换的后端接缝
+- src/agent/index.js: _pushTurn 改为 append 事件, _loadHistory/_getSession 改为 deriveMessages + 投影层裁剪
+
+### 验证
+- 会话事件日志: append 不可变 / derive 投影 / replay / fork / 跨实例恢复 全测过
+- 全量测试: 76 个 74 过 0 失败 2 跳过
+- 旧 default.jsonl 新格式正常加载, 旧 eval-test 格式优雅跳过
