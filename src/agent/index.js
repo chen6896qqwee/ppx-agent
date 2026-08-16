@@ -337,6 +337,22 @@ export class PPXAgent {
     throw lastErr || new Error("所有 provider 均失败");
   }
 
+  // 统一工具执行入口 (供 http 原生 tool_calls + openclaw/dsh 围栏代理共用) [P0#1]
+  async _runTool(name, args, llmInstance) {
+    const t0 = Date.now();
+    this._lastTurnUsedTools = true;
+    const result = await this.tools.call(name, args, { agent: this });
+    this.traces.record({
+      tool: name,
+      args,
+      result: result.slice(0, 800),
+      ok: !result.startsWith(TOOL_ERROR_PREFIX),
+      durationMs: Date.now() - t0,
+      error: result.startsWith(TOOL_ERROR_PREFIX) ? result : null,
+    });
+    return result;
+  }
+
   // LLM + 工具调用循环 (带 provider 回退)
   async _llmWithTools(seedMessages, llmInstance = this.llm) {
     const messages = [...seedMessages];
@@ -345,7 +361,10 @@ export class PPXAgent {
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       if (this._interrupted) return "[interrupted] task cancelled by operator.";
-      const resp = await llmInstance.apiChat(messages, { tools });
+      const resp = await llmInstance.apiChat(messages, {
+        tools,
+        toolRunner: async (name, args) => this._runTool(name, args, llmInstance),
+      });
       const msg = resp.message;
       messages.push(msg);
 

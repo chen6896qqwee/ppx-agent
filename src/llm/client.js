@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { info, warn, error } from "../utils/logger.js";
+import { buildFencePrompt, proxyToolLoop } from "./fence.js";
 
 const DEFAULT_DSH_ROOT = process.env.PPX_DSH_ROOT || "C:/Users/chen/Desktop/deepseek-harness";
 const DEFAULT_MJS = process.env.PPX_OPENCLAW_MJS || "C:/Users/chen/AppData/Roaming/npm/node_modules/openclaw/openclaw.mjs";
@@ -163,14 +164,17 @@ export class LLMClient {
   }
 
   // API chat (支持工具调用), 返回完整 message (含 tool_calls)
-  async apiChat(messages, { tools = [], temperature = 0.7, maxTokens = 4096 } = {}) {
+  async apiChat(messages, { tools = [], temperature = 0.7, maxTokens = 4096, toolRunner = null } = {}) {
     if (this.backend === "openclaw") {
-      // OpenClaw 引擎自己处理工具循环; 这里把引擎当纯 LLM, 不返回 tool_calls
+      // OpenClaw 引擎是外部进程, 无法直接调用 PPX 内部工具。
+      // 若提供 toolRunner, 走围栏代理循环: 引擎以纯 LLM 输出工具意图, PPX 解析执行。
+      // 否则退化纯 LLM (引擎自带工具循环, 只回最终文本)。
+      if (toolRunner && tools.length) return this._proxyChat(messages, { tools, toolRunner, engine: "openclaw" });
       const r = await this._openclawChatAsync(messages);
       return { message: { role: "assistant", content: r.content, tool_calls: null }, usage: r.usage };
     }
     if (this.backend === "deepseek") {
-      // dsh 引擎自己处理工具循环; 这里把引擎当纯 LLM, 不返回 tool_calls
+      if (toolRunner && tools.length) return this._proxyChat(messages, { tools, toolRunner, engine: "deepseek" });
       const r = await this._dshChatAsync(messages);
       return { message: { role: "assistant", content: r.content, tool_calls: null }, usage: r.usage };
     }
@@ -187,6 +191,30 @@ export class LLMClient {
       },
       usage: data?.usage,
     };
+  }
+
+  // 围栏代理循环: 把工具清单注入, 引擎以纯 LLM 输出工具意图, PPX 执行 [P0#1]
+  async _proxyChat(messages, { tools, toolRunner, engine }) {
+    const fencePrompt = buildFencePrompt(tools);
+    // 取最后一条 user 消息作为任务
+    const lastUser = [...messages].reverse().find((m) => m && m.role === "user");
+    const task = lastUser?.content || "";
+    const combined = fencePrompt + "\n\n" + task;
+    const finalText = await proxyToolLoop(
+      async (context) => {
+        // 每条消息: 围栏协议 + 任务 + 累积工具结果
+        const msg = context ? combined + "\n\n" + context : combined;
+        if (engine === "openclaw") {
+          const r = await this._openclawChatAsync([{ role: "user", content: msg }]);
+          return r.content;
+        }
+        const r = await this._dshChatAsync([{ role: "user", content: msg }]);
+        return r.content;
+      },
+      toolRunner,
+      { maxRounds: 8 }
+    );
+    return { message: { role: "assistant", content: finalText, tool_calls: null }, usage: null };
   }
 
   async _request(path, jsonBody) {

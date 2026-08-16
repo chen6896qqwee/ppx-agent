@@ -130,6 +130,20 @@
 - combined 让 openclaw 和 dsh 互为冗余, 一个引擎挂了自动切换, 皮皮虾对话不中断
 - 想单独用某个引擎时, 仍可用 backend=openclaw / backend=deepseek 的单引擎 provider
 
+## v0.6.1 (2026-08-16) — 评估报告 P0 修复 (EVALUATION-v0.6-final)
+
+### P0 修复
+- **openclaw/dsh 后端工具调用代理**: 新增 src/llm/fence.js 围栏协议。openclaw/dsh 是外部进程无法直调 PPX 内部工具, 现通过围栏语法 (\u27ea tool:name \u2502 {json} \u27eb) 让引擎以纯 LLM 输出工具意图, client 解析执行 PPX 工具并喂回结果, 收敛后返回最终回复。agent 层零改动, 与 http 原生 tool_calls 并存。
+  - parseToolFence / buildFencePrompt / proxyToolLoop 纯函数, 独立可测
+  - LLMClient.apiChat 新增 toolRunner 参数; openclaw/dsh 后端有 toolRunner 时走代理循环, 否则退化纯 LLM
+  - agent/index.js 新增 _runTool 统一工具执行入口 (trace 记录)
+- **hardcoded 路径外部化**: DEFAULT_DSH_ROOT / DEFAULT_MJS 改为环境变量 PPX_DSH_ROOT / PPX_OPENCLAW_MJS, 缺失回退内置默认
+- **dead code 确认**: _queryJaccard / _jaccard 已在前序版本清理, 报告基于旧快照, 无需处理
+
+### 验证
+- 全量测试: 93 个 90 过 0 失败 3 跳过 (网络 gate)
+- 新增 fence.test.js (9) + tool-proxy.test.js (2) 覆盖围栏解析与代理循环
+
 ## v0.6.0 (2026-08-15) — 新架构: 吸收 DeepSeek Harness 设计原则 + openclaw 为唯一底座引擎
 
 应兄弟要求: 不要套两个引擎的路由器, 而是吸收两者优势合并成一个新架构。定案:
