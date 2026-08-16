@@ -69,17 +69,13 @@ test("对话完整走 L0-L3 管道", async () => {
   assert.ok(a.scenes.count() >= 0);
   a.shutdown();
 });
-test("滚动压缩: today.md 超量后归档到 longterm", async () => {
+test("滚动压缩: 今日事件超量后归档到 longterm", async () => {
   const a = new PPXAgent({ root: tmpRoot("compact") });
-  // 直接往 today.md 塞超量行, 触发压缩
   const mt = a.memory;
-  let long = mt.longtermMd;
-  const big = Array.from({length: 60}, (_,i) => `- [2026-08-12T00:00:00.000Z] 用户: 测试消息${i} 内容`);
-  fs.writeFileSync(mt.todayMd, "# 2026-08-12\n" + big.join("\n") + "\n", "utf8");
+  // 往 session 事件日志塞超量事件, 触发压缩 (今日视图由 session 派生)
+  for (let i = 0; i < 60; i++) a.sessionStore.append("k", "user/message", { content: `测试消息${i} 内容` });
   await mt._compactIfNeeded();
-  const today = fs.readFileSync(mt.todayMd, "utf8");
   const longterm = fs.readFileSync(mt.longtermMd, "utf8");
-  assert.ok(longterm.includes("thin"), "longterm 应含压缩标记");
-  assert.ok(today.split("\n").filter(Boolean).length <= 21, "today 应只剩近期行: " + today.split("\n").length);
+  assert.ok(/thin|llm-summary|archived/.test(longterm), "longterm 应含压缩标记: " + longterm.slice(-80));
   a.shutdown();
 });

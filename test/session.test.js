@@ -33,3 +33,52 @@ test("resetSession 同时清除磁盘文件", () => {
   assert.ok(!a.sessionStore.has("k2"), "重置后清除");
   a.shutdown();
 });
+
+// ---- 新架构: 会话事件日志 (吸收 dsh "会话即唯一事实源") ----
+import { SessionStore, EVENTS } from "../src/memory/session.js";
+
+test("会话事件日志: append 不可变 + derive 投影", () => {
+  const root = tmpRoot("evlog");
+  const ss = new SessionStore(root);
+  ss.append("k", EVENTS.USER, { content: "你好" });
+  ss.append("k", EVENTS.ASSISTANT, { content: "在的" });
+  ss.append("k", EVENTS.SYSTEM, { content: "注入" });
+  ss.append("k", EVENTS.TOOL_CALL, { name: "run_command" });
+  // 日志不可变: seq 递增, 含全部事件 (system/tool 也记录)
+  const evs = ss.replay("k");
+  assert.equal(evs.length, 4, "4 条事件全保留");
+  assert.deepEqual(evs.map(e=>e.seq), [1,2,3,4], "seq 递增");
+  // derive 只投影 user/assistant (模型可见历史)
+  const msgs = ss.deriveMessages("k");
+  assert.equal(msgs.length, 2, "投影出 2 条对话");
+  assert.equal(msgs[0].role, "user");
+  assert.equal(msgs[1].role, "assistant");
+  // 跨实例重启: 事件日志完整恢复
+  const ss2 = new SessionStore(root);
+  assert.equal(ss2.replay("k").length, 4, "重启后事件日志完整");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("会话事件日志: fork 从边界派生新会话, 源不可变", () => {
+  const root = tmpRoot("fork");
+  const ss = new SessionStore(root);
+  ss.append("a", EVENTS.USER, { content: "m1" });
+  ss.append("a", EVENTS.ASSISTANT, { content: "r1" });
+  ss.append("a", EVENTS.USER, { content: "m2" });
+  ss.append("a", EVENTS.ASSISTANT, { content: "r2" });
+  // fork 到 seq<=2 (只保留第1轮)
+  const kept = ss.fork("a", 2, "b");
+  assert.equal(kept.length, 2, "fork 保留边界内事件");
+  assert.equal(ss.deriveMessages("b").length, 2, "新会话只有第1轮");
+  assert.equal(ss.deriveMessages("a").length, 4, "源会话不受影响");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("代理 _pushTurn 写事件日志, 历史含 assistant", () => {
+  const root = tmpRoot("push");
+  const a = new PPXAgent({ root });
+  a._pushTurn("k", "问", "答");
+  assert.equal(a.sessionStore.count("k"), 2, "2 条事件");
+  assert.equal(a._loadHistory("k").length, 2, "投影 2 条");
+  a.shutdown();
+});

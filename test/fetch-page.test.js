@@ -1,10 +1,14 @@
-﻿import test from "node:test";
+﻿// test/fetch-page.test.js - fetch_page 工具测试
+// 网络 gate: 默认跳过真实抓取 (mock 环境), PPX_NET_TEST=1 时才真抓
+// 与 advanced.tools.test.js 保持一致, 消除 flaky
+import test from "node:test";
 import assert from "node:assert";
 import { ToolCatalog, registerAdvancedTools, Scheduler } from "../src/tools/index.js";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
 
+const NET = process.env.PPX_NET_TEST === "1";
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-fp-"));
 const cat = new ToolCatalog();
 registerAdvancedTools(cat, { dataDir, scheduler: new Scheduler(dataDir), onMemoryNote: () => {} });
@@ -14,7 +18,7 @@ test("fetch_page: 工具已注册", () => {
   assert.ok(t.includes("fetch_page"), "fetch_page 在工具列表");
 });
 
-test("fetch_page: 抓取公开网页正文", async () => {
+test("fetch_page: 抓取公开网页正文", { skip: !NET, timeout: 20000 }, async () => {
   const r = await cat.call("fetch_page", { url: "https://example.com", maxChars: 500 });
   const j = JSON.parse(r);
   assert.equal(j.status, 200, "HTTP 200");

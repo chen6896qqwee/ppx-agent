@@ -41,8 +41,7 @@ test("LLM摘要: 无LLM时降级为堆叠不崩", async () => {
   const a = new PPXAgent({ root: tmpRoot("sum") });
   a.llm = null; // 强制无 LLM
   const mt = a.memory;
-  const big = Array.from({length: 60}, (_,i) => `- [2026-08-12T00:00:00.000Z] 用户: 测试消息${i} 内容`);
-  fs.writeFileSync(mt.todayMd, "# 2026-08-12\n" + big.join("\n") + "\n", "utf8");
+  for (let i = 0; i < 60; i++) a.sessionStore.append("k", "user/message", { content: `测试消息${i} 内容` });
   await mt._compactIfNeeded();
   const longterm = fs.readFileSync(mt.longtermMd, "utf8");
   assert.ok(longterm.includes("thin") || longterm.includes("archived"), "无LLM应降级堆叠: " + longterm.slice(-80));
