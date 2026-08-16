@@ -57,6 +57,8 @@ export class PPXAgent {
 
     // 注入 LLM 摘要器给记忆压缩 (真摘要, 非堆叠)
     this.memory.summarizer = (raw) => this._summarizeMemory(raw);
+    // P1#9: LLM 结构化提炼
+    this.memory.setExtractor((u, a) => this._extractMemory(u, a));
 
     // 记忆系统: 腾讯风格四层 (L0对话→L1原子→L2场景→L3画像); L0 由 session 派生
     this.l0 = new L0Recorder(this.sessionStore, this.dataDir);
@@ -191,6 +193,22 @@ export class PPXAgent {
       if (v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1);
       return v;
     }
+  }
+
+  // P1#9: LLM 结构化记忆提炼 - 从高信号对话提取关键事实/偏好/待办 (替代简单启发式)
+  async _extractMemory(user, assistant) {
+    if (!this.llm) return [];
+    const r = await this.llm.chat([
+      { role: "system", content: "你是记忆提炼器。从对话中提取值得长期记忆的关键事实、用户偏好、待办事项。只输出 JSON 数组, 每项是{content: 一句完整中文记忆}。没有值得记的返回 []。不要解释, 只输出 JSON。" },
+      { role: "user", content: "用户: " + String(user).slice(0, 800) + "\n助手: " + String(assistant).slice(0, 800) },
+    ]);
+    const text = String(r.content || "").trim();
+    const m = text.match(/[[sS]*]/);
+    if (!m) return [];
+    try {
+      const arr = JSON.parse(m[0]);
+      return Array.isArray(arr) ? arr.map((x) => String(x.content || x).trim()).filter(Boolean) : [];
+    } catch { return []; }
   }
 
   // 用 LLM 把旧对话浓缩成语义摘要 (Harness 上下文工程)

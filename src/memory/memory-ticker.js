@@ -22,6 +22,7 @@ function _renderLines(sessionStore, day) {
 export class MemoryTicker {
   constructor(dataDir, factStore, summarizer = null, sessionStore = null) {
     this.summarizer = summarizer;
+    this.extractor = null; // P1#9: LLM 结构化提炼器 (agent 注入), 提取关键事实/偏好/待办
     this.dir = path.join(dataDir, "memory");
     ensureDir(this.dir);
     ensureDir(path.join(this.dir, "daily"));
@@ -76,8 +77,21 @@ ${lines.join("\n")}\n`);
     // 对话原文已由 session 事件日志保存; 今日视图由 session 派生
     if (this.state.turnCount % TURNS_PER_SUMMARY === 0) this._compileDaily_Rolling();
     await this._compactIfNeeded();
+    // P1#9: 若配 LLM 提炼器且本次对话含高信号, 走结构化提炼; 否则退回启发式
+    if (this.extractor && _hasSignal(user, assistant)) {
+      try {
+        const facts = await this.extractor(String(user || ""), String(assistant || ""));
+        if (facts && facts.length) {
+          for (const f of facts) this.factStore.add(f, { source: "extract" });
+          return;
+        }
+      } catch {}
+    }
     if (user) this.factStore.addMemory(user);
   }
+
+  // P1#9: 注入 LLM 结构化提炼器 (agent 调 setExtractor)
+  setExtractor(fn) { this.extractor = typeof fn === "function" ? fn : null; }
 
   // 每 N 轮: 把今日事件滚动归档进 longterm (从 session 派生)
   _compileDaily_Rolling() {
@@ -138,3 +152,14 @@ ${topFacts || "(暂无)"}
     } catch { return ""; }
   }
 }
+// P1#9: 记忆信号预筛 - 命中关键词或长度信号才触发 LLM 提炼 (省成本)
+function _hasSignal(user, assistant) {
+  const u = String(user || "");
+  const a = String(assistant || "");
+  const text = (u + " " + a).slice(0, 500);
+  if (text.length < 8) return false;
+  const SIGNAL = /(我是|我喜欢|我讨厌|我记得|请记住|记住|偏好|习惯|目标是|我需要|我要|想买|喜欢|不喜欢|重要|关键|待办|计划|打算|希望|擅长|不擅长|生日|地址|电话|邮箱|账号|密码|股票|基金|仓位|止损|止盈|策略|工作|项目|公司|同事|老板|朋友|家人|对象|结婚|买房|买车|考试|学习)/;
+  const isGreeting = /^(你好|在吗|谢谢|好的|嗯|ok|hi|hello|再见|拜拜|哈喽)[!。？?]*$/i.test(u.trim());
+  return !isGreeting && (SIGNAL.test(text) || text.length > 40);
+}
+

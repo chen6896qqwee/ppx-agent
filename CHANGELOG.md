@@ -130,6 +130,18 @@
 - combined 让 openclaw 和 dsh 互为冗余, 一个引擎挂了自动切换, 皮皮虾对话不中断
 - 想单独用某个引擎时, 仍可用 backend=openclaw / backend=deepseek 的单引擎 provider
 
+## v0.6.5 (2026-08-16) — 记忆主动提炼 (EVALUATION-v0.6-final P1#9)
+
+### P1#9 记忆主动提炼 (LLM 结构化)
+- memory-ticker: recordTurn 新增 extractor 通道。命中信号预筛(_hasSignal)时调 LLM 结构化提炼关键事实/偏好/待办, 替代简单启发式 addMemory
+  - _hasSignal: 关键词信号(我喜欢/记住/偏好/股票/仓位/工作等)或整轮>40字非寒暄才触发, 省成本
+  - 无 extractor 或提炼为空时退回原启发式 addMemory
+- agent: 新增 _extractMemory(user, assistant) 用 LLM 提炼, 解析 JSON 数组; 启动时 setExtractor 注入
+
+### 验证
+- 全量测试: 107 个 104 过 0 失败 3 跳过 (网络 gate)
+- 新增 memory-extract.test.js (3) 覆盖高/低信号触发与退回
+
 ## v0.6.4 (2026-08-16) — Web UI 工具调用可视化 (EVALUATION-v0.6-final P1#7)
 
 ### P1#7 工具调用过程可视化
