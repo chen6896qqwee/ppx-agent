@@ -73,6 +73,30 @@ walk(this.dataDir);
     fs.writeFileSync(this.integrity, JSON.stringify({ clean: true, pid: process.pid, ts: Date.now() }), "utf8");
   }
 
+  // 清理历史 corrupt 备份: 保留最近 N 个, 更早自动删除 (默认保留 2)
+  cleanupCorruptBackups(keep = 2) {
+    const files = [];
+    const walk = (d) => {
+      if (!fs.existsSync(d)) return;
+      for (const f of fs.readdirSync(d)) {
+        const p = path.join(d, f);
+        let st;
+        try { st = fs.statSync(p); } catch { continue; }
+        if (st.isDirectory()) walk(p);
+        else if (f.includes(".corrupt-")) files.push({ p, mtime: st.mtimeMs });
+      }
+    };
+    walk(this.dataDir);
+    files.sort((a, b) => b.mtime - a.mtime);
+    const removed = [];
+    for (const f of files.slice(keep)) {
+      try { fs.unlinkSync(f.p); removed.push(path.basename(f.p)); }
+      catch (e) { warn("cleanup corrupt backup failed: " + f.p + ": " + e.message); }
+    }
+    if (removed.length) info("selfheal: 清理旧 corrupt 备份 " + removed.length + " 个: " + removed.join(", "));
+    return removed;
+  }
+  
   // 完整自愈入口
   heal() {
     const fixes = this.runStartupChecks();

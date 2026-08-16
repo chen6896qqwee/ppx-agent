@@ -1,4 +1,4 @@
-﻿// src/utils/store.js - 零依赖文件存储 (JSON + 原子写)
+// src/utils/store.js - 零依赖文件存储 (JSON + 原子写)
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -59,5 +59,10 @@ export function nowISO() {
 }
 
 export function logicalDay(d = new Date()) {
-  return d.toISOString().slice(0, 10);
+  // 逻辑日 (本地时区): 今日/归档/按天检索统一用本地年月日
+  // 与 eventsByDay() 的本地解析保持一致, 避免 8 小时时区偏移导致按天检索错位
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }

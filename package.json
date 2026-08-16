@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.22.3 <23 || >=24.15 <25 || >=25.9"
   },
   "main": "src/agent/index.js",
   "scripts": {

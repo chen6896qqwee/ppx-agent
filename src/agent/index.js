@@ -1,4 +1,4 @@
-﻿// src/agent/index.js - Agent 引擎 (皮皮虾核心) v0.2 含工具调用
+// src/agent/index.js - Agent 引擎 (皮皮虾核心) v0.2 含工具调用
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
@@ -10,7 +10,7 @@ import { Persona } from "../persona/index.js";
 import { LLMClient } from "../llm/index.js";
 import { ToolCatalog, registerBuiltinTools, registerAdvancedTools, Scheduler, TOOL_ERROR_PREFIX } from "../tools/index.js";
 import { registerMethodTools, registerSelfmodTools } from "../tools/index.js";
-import { readJson, readText, ensureDir } from "../utils/store.js";
+import { readJson, readText, ensureDir, logicalDay } from "../utils/store.js";
 import { info, warn, error } from "../utils/logger.js";
 import { Traces } from "../utils/trace.js";
 
@@ -19,7 +19,7 @@ const MAX_TOOL_ROUNDS = 8;
 const TOOL_RESULT_BUDGET = 4000; // L4 toolResultBudget: 工具结果超过此长度裁剪, 防撑爆上下文
 const MAX_TOOL_ERROR_RETRY = 2;
 const MAX_SESSION_HISTORY = 20;   // 最大会话历史条数(条)
-const HISTORY_TOKEN_BUDGET = 4000; // ????? token ??????
+const HISTORY_TOKEN_BUDGET = 4000; // 会话历史 token 预算
 
 // 估算 token: 中文字符约1字=0.6token, 1token约4字符
 function estimateTokens(s){ return Math.ceil(String(s||'').length / 1.6); }
@@ -46,7 +46,9 @@ export class PPXAgent {
     this.persona = new Persona(root);
     this.facts = new FactStore(this.dataDir, this.config.memory || {});
     this.experience = new Experience(this.dataDir);
-    this.memory = new MemoryTicker(this.dataDir, this.facts);
+    // 会话事件日志 (唯一事实源) 先建, 供 memory-ticker 派生今日视图 + L0 代理
+    this.sessionStore = new SessionStore(this.dataDir);
+    this.memory = new MemoryTicker(this.dataDir, this.facts, null, this.sessionStore);
 
     // 多 provider 回退: 优先有 API key 的 (各模型 API), 本地模型兜底
     this.llm = this._resolveLLM();
@@ -56,8 +58,8 @@ export class PPXAgent {
     // 注入 LLM 摘要器给记忆压缩 (真摘要, 非堆叠)
     this.memory.summarizer = (raw) => this._summarizeMemory(raw);
 
-    // 记忆系统: 腾讯风格四层 (L0对话→L1原子→L2场景→L3画像)
-    this.l0 = new L0Recorder(this.dataDir);
+    // 记忆系统: 腾讯风格四层 (L0对话→L1原子→L2场景→L3画像); L0 由 session 派生
+    this.l0 = new L0Recorder(this.sessionStore, this.dataDir);
     this.scenes = new SceneStore(this.dataDir);
     this.personaStore = new PersonaStore(this.dataDir, { userName: this.userName });
 
@@ -77,9 +79,7 @@ export class PPXAgent {
     this._interrupted = false;
     this._lastTurnUsedTools = false;
 
-    // 会话历史 (sessionKey -> [{role,content}]) 注: sessions 已由 SessionStore 落盘
-    this.sessionStore = new SessionStore(this.dataDir);
-    this.sessions = this.sessionStore.cache;
+    // 会话事件日志 (append-only) 是唯一事实源; 历史由 SessionStore.append 写入 + deriveMessages 投影
   }
 
 
@@ -98,7 +98,7 @@ export class PPXAgent {
     for (const prov of provs) {
       const key = prov.api_key || process.env[prov.api_key_env];
       const isLocal = /127\.0\.0\.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
-      if (key || isLocal || prov.backend === "openclaw" || prov.id === "openclaw") clients.push(new LLMClient(prov));
+      if (key || isLocal || prov.backend === "openclaw" || prov.id === "openclaw" || prov.backend === "deepseek") clients.push(new LLMClient(prov));
     }
     return clients;
   }
@@ -108,7 +108,7 @@ export class PPXAgent {
     for (const prov of provs) {
       const key = prov.api_key || process.env[prov.api_key_env];
       const isLocal = /127.0.0.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
-      if (key || isLocal || prov.backend === "openclaw" || prov.id === "openclaw") {
+      if (key || isLocal || prov.backend === "openclaw" || prov.id === "openclaw" || prov.backend === "deepseek") {
         return new LLMClient(prov);
       }
     }
@@ -200,34 +200,37 @@ export class PPXAgent {
     return r.content;
   }
 
-  // ---- 多轮会话历史 (P0) ----
-  _getSession(sessionKey) {
-    const k = sessionKey || "default";
-    if (!this.sessions.has(k)) this.sessions.set(k, []);
-    return this.sessions.get(k);
-  }
-
-  // 追加一轮对话到会话历史, 并按 token 预算从头部滚动截断
-  _pushTurn(sessionKey, userMsg, assistant) {
-    const hist = this._getSession(sessionKey);
-    hist.push({ role: "user", content: userMsg });
-    if (assistant) hist.push({ role: "assistant", content: assistant });
-    while (hist.length > MAX_SESSION_HISTORY) hist.shift();
+  // ---- 多轮会话历史 (吸收 dsh "会话即事实源") ----
+  // 历史从事件日志投影, 再按预算裁剪 (裁剪只发生在投影层, 日志本身不可变)
+  _trimHistory(hist) {
+    let h = [...hist];
+    while (h.length > MAX_SESSION_HISTORY) h.shift();
     let total = 0, dropFrom = 0;
-    for (let i = hist.length - 1; i >= 0; i--) {
-      total += estimateTokens(hist[i].content);
+    for (let i = h.length - 1; i >= 0; i--) {
+      total += estimateTokens(h[i].content);
       if (total > HISTORY_TOKEN_BUDGET) { dropFrom = i + 1; break; }
     }
-    if (dropFrom > 0) this.sessions.set(sessionKey, hist.slice(dropFrom));
-    if (this.sessionStore) this.sessionStore.set(sessionKey, this._getSession(sessionKey));
+    if (dropFrom > 0) h = h.slice(dropFrom);
+    return h;
+  }
+
+  _getSession(sessionKey) {
+    return this._trimHistory(this.sessionStore.deriveMessages(sessionKey || "default"));
+  }
+
+  // 追加一轮对话为不可变事件 (append-only, 永不重写日志)
+  _pushTurn(sessionKey, userMsg, assistant) {
+    const k = sessionKey || "default";
+    this.sessionStore.append(k, "user/message", { content: String(userMsg) });
+    if (assistant) this.sessionStore.append(k, "assistant/message", { content: String(assistant) });
   }
 
   _loadHistory(sessionKey) {
     return this._getSession(sessionKey).map((m) => ({ ...m }));
   }
 
-  // 重置某会话历史 (新会话)
-  resetSession(sessionKey) { this.sessions.delete(sessionKey); this.sessionStore.delete(sessionKey); }
+  // 重置某会话历史 (新会话): 删除事件日志
+  resetSession(sessionKey) { this.sessionStore.delete(sessionKey || "default"); }
 
   // 组装记忆上下文
   _context(userMsg) {
@@ -275,8 +278,6 @@ export class PPXAgent {
     if (persist) {
       this._pushTurn(sessionKey, String(userMsg), reply);
       await this.memory.recordTurn(userMsg, reply);
-      this.l0.record({ role: "user", content: userMsg, sessionKey: "default" });
-      this.l0.record({ role: "assistant", content: reply, sessionKey: "default" });
       // L2 场景归档: 从新记忆里找需要归档的
       this._archiveScenes();
       this._learnFromTurn(userMsg, reply);
@@ -307,8 +308,6 @@ export class PPXAgent {
     }
     this._pushTurn(sessionKey, String(userMsg), full);
     await this.memory.recordTurn(userMsg, full);
-    this.l0.record({ role: "user", content: String(userMsg), sessionKey });
-    this.l0.record({ role: "assistant", content: full, sessionKey });
     return full;
   }
 
@@ -426,7 +425,7 @@ export class PPXAgent {
     const msgs = [];
     const now = new Date();
     for (let d = days - 1; d >= 0; d--) {
-      const day = new Date(now.getTime() - d * 86400000).toISOString().slice(0, 10);
+      const day = logicalDay(new Date(now.getTime() - d * 86400000));
       const recs = this.l0.read(day, 2000);
       for (const r of recs) {
         if (r.sessionKey !== sessionKey) continue;

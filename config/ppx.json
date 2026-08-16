@@ -15,6 +15,12 @@
       "timeout_ms": 180000
     },
     {
+      "id": "dsh",
+      "backend": "deepseek",
+      "dsh_root": "C:/Users/chen/Desktop/deepseek-harness",
+      "timeout_ms": 180000
+    },
+    {
       "id": "openai",
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
