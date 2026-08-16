@@ -81,6 +81,15 @@
   }
   @media (min-width:769px){ .side-toggle { display:none; } }
   .side-toggle { background:var(--panel); color:var(--muted); border:1px solid var(--border); border-radius:8px; padding:6px 12px; cursor:pointer; font-size:12px; white-space:nowrap; }
+  .sess-item { display:flex; align-items:center; gap:8px; padding:9px 11px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer; background:var(--card); }
+  .sess-item:hover { border-color:var(--accent); }
+  .sess-item.active { border-color:var(--accent); background:var(--agent-bg); }
+  .sess-item .sess-title { flex:1; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sess-item .sess-meta { font-size:11px; color:var(--muted); }
+  .sess-item .sess-del { font-size:11px; color:var(--muted); cursor:pointer; padding:2px 6px; border-radius:4px; border:none; background:none; }
+  .sess-item .sess-del:hover { color:var(--bad-fg); background:var(--bad-bg); }
+  .sess-item .sess-ren { font-size:11px; color:var(--muted); cursor:pointer; padding:2px 6px; border-radius:4px; border:none; background:none; }
+  .sess-item .sess-ren:hover { color:var(--accent); }
   .side-toggle.active { color:var(--accent); border-color:var(--accent); }
 </style>
 </head>
@@ -100,11 +109,13 @@
   </div>
   <div class="side" id="side">
     <div class="tabs">
-      <div class="tab active" data-t="memory">记忆</div>
+      <div class="tab active" data-t="sessions">会话</div>
+      <div class="tab" data-t="memory">记忆</div>
       <div class="tab" data-t="traces">轨迹</div>
       <div class="tab" data-t="stats">统计</div>
     </div>
-    <div id="panel-memory" class="panel active"></div>
+    <div id="panel-sessions" class="panel active"></div>
+    <div id="panel-memory" class="panel"></div>
     <div id="panel-traces" class="panel"></div>
     <div id="panel-stats" class="panel"></div>
   </div>
@@ -191,6 +202,7 @@ document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
 
 async function load(which){
   const el=document.getElementById("panel-"+which);
+  if(which==="sessions") return loadSessions(el);
   if(which==="memory") el.innerHTML="<div class=empty>加载中…</div>";
   try{
     if(which==="memory"){
@@ -221,7 +233,48 @@ async function submitScene(){
   const n=document.getElementById("sName").value.trim(), d=document.getElementById("sDesc").value.trim(), h=document.getElementById("sHelp").value.trim();
   if(n&&d&&h){
     await fetch("/message",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:`用 scene_create 创建场景: 名称=${n}, 介绍=${d}, 能帮=${h}`})}).then(r=>r.json()).catch(()=>{});
-    closeScene(); load("memory");
+    closeScene(); // ===== 会话管理 (P1#6) =====
+function fmtTs(ts){ if(!ts) return ""; const d=new Date(ts); return (d.getMonth()+1)+"-"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
+async function loadSessions(el){
+  el.innerHTML='<button class="btn" style="width:100%;margin-bottom:10px" onclick="newSession()">+ 新建会话</button><div class=empty>加载中…</div>';
+  try{
+    const r=await fetch("/sessions"); const j=await r.json();
+    const list=j.sessions||[];
+    el.innerHTML='<button class="btn" style="width:100%;margin-bottom:10px" onclick="newSession()">+ 新建会话</button>';
+    if(!list.length){ el.innerHTML+='<div class=empty>暂无会话</div>'; return; }
+    el.innerHTML+=list.map(s=>`<div class="sess-item ${s.key===sessionId?"active":""}" onclick="switchSession('${s.key}')">
+      <div style="flex:1;min-width:0">
+        <div class="sess-title" style="font-weight:600">${esc(s.title)}</div>
+        <div class="sess-meta">${s.count}条 · ${fmtTs(s.lastTs)}</div>
+      </div>
+      <button class="sess-ren" title="重命名" onclick="event.stopPropagation();renameSession('${s.key}')">✎</button>
+      <button class="sess-del" title="删除" onclick="event.stopPropagation();delSession('${s.key}')">✕</button>
+    </div>`).join("");
+  }catch(e){ el.innerHTML='<div class=empty>加载失败: '+esc(e.message)+'</div>'; }
+}
+function newSession(){
+  sessionId="s_"+Math.random().toString(36).slice(2,10); localStorage.setItem("ppx_sid",sessionId);
+  msgs.innerHTML='<div class="empty">新会话已开始</div>'; loadSessions(document.getElementById("panel-sessions"));
+}
+function switchSession(key){
+  sessionId=key; localStorage.setItem("ppx_sid",key);
+  msgs.innerHTML='<div class="empty">切换中…</div>'; loadSessions(document.getElementById("panel-sessions"));
+}
+async function delSession(key){
+  if(!confirm("删除会话 "+key+"?")) return;
+  await fetch("/sessions/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key})});
+  if(sessionId===key){ sessionId="s_"+Math.random().toString(36).slice(2,10); localStorage.setItem("ppx_sid",sessionId); msgs.innerHTML='<div class="empty">新会话已开始</div>'; }
+  loadSessions(document.getElementById("panel-sessions"));
+}
+function renameSession(key){
+  const n=prompt("重命名会话 (新 key):", key); if(!n||n===key) return;
+  fetch("/sessions/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({from:key,to:n})}).then(r=>r.json()).then(()=>{
+    if(sessionId===key){ sessionId=n; localStorage.setItem("ppx_sid",n); }
+    loadSessions(document.getElementById("panel-sessions"));
+  }).catch(()=>alert("重命名失败"));
+}
+
+load("memory");
   } else alert("请填写完整: 名称/介绍/能力");
 }
 mask.addEventListener("click",e=>{ if(e.target===mask) closeScene(); });

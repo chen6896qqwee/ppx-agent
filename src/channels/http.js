@@ -162,6 +162,37 @@ export class HttpChannel extends Channel {
         return;
       }
 
+      // 会话列表 (Web UI 多会话管理) [P1#6]
+      if (req.method === "GET" && req.url === "/sessions") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const list = (this.agent.sessionStore && this.agent.sessionStore.list) ? this.agent.sessionStore.list() : [];
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ sessions: list }));
+        return;
+      }
+
+      // 会话重命名 [P1#6]
+      if (req.method === "POST" && req.url === "/sessions/rename") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const body = await this._readBody(req, res);
+        if (body === null) return;
+        const ok = this.agent.sessionStore && typeof this.agent.sessionStore.rename === "function"
+          ? this.agent.sessionStore.rename(body.from, body.to) : false;
+        res.writeHead(ok ? 200 : 404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok }));
+        return;
+      }
+      // 会话删除 [P1#6]
+      if (req.method === "POST" && req.url === "/sessions/delete") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const body = await this._readBody(req, res);
+        if (body === null) return;
+        if (this.agent.sessionStore) this.agent.sessionStore.delete(body.key || "default");
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
       // 会话重置
       if (req.method === "POST" && req.url === "/reset") {
         if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }

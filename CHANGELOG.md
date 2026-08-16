@@ -130,6 +130,18 @@
 - combined 让 openclaw 和 dsh 互为冗余, 一个引擎挂了自动切换, 皮皮虾对话不中断
 - 想单独用某个引擎时, 仍可用 backend=openclaw / backend=deepseek 的单引擎 provider
 
+## v0.6.3 (2026-08-16) — Web UI 多会话管理 (EVALUATION-v0.6-final P1#6)
+
+### P1#6 多会话管理
+- SessionStore.list(): 列出所有会话 (key/count/lastTs/标题), 按 lastTs 倒序
+- SessionStore.rename(): 复制事件到新 key 删旧 key, 保留 seq 顺序
+- http.js: 新增 GET /sessions (列表)、POST /sessions/rename、POST /sessions/delete
+- Web UI: 侧栏新增"会话"tab, 支持新建/切换/删除/重命名会话, 显示条数+时间+标题
+
+### 验证
+- 全量测试: 102 个 99 过 0 失败 3 跳过 (网络 gate)
+- 新增 session-manage.test.js (3) 覆盖 list/rename/delete
+
 ## v0.6.2 (2026-08-16) — 评估报告 P1 修复 (EVALUATION-v0.6-final)
 
 ### P1 修复

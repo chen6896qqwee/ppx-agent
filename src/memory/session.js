@@ -109,6 +109,25 @@ export class SessionStore {
   // count: 事件条数
   count(key) { return this._log(this._safe(key)).length; }
 
+  // 列出所有会话: {key, count, lastTs, title} (title 取首条 user 消息前 20 字)
+  // 供 Web UI 多会话管理 (P1#6)
+  list() {
+    const out = [];
+    for (const [key, events] of this._logs) {
+      if (!events.length) continue;
+      const firstUser = events.find((e) => e.type === EVENTS.USER);
+      const title = firstUser?.data?.content ? String(firstUser.data.content).slice(0, 20) : key;
+      out.push({
+        key,
+        count: events.length,
+        lastTs: events[events.length - 1].ts,
+        title,
+      });
+    }
+    out.sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0));
+    return out;
+  }
+
   // ---- 兼容旧接口 (agent/CLI 仍可用) ----
   get(key) { return this.deriveMessages(key); }
   set(key, history) {
@@ -118,6 +137,20 @@ export class SessionStore {
     return history;
   }
   has(key) { return this._logs.has(this._safe(key)); }
+  // 重命名会话: 复制事件到新 key 并删除旧 key (保留 seq 顺序) [P1#6]
+  rename(fromKey, toKey) {
+    const f = this._safe(fromKey), t = this._safe(toKey);
+    if (f === t) return false;
+    if (!this._logs.has(f)) return false;
+    const events = this._logs.get(f);
+    this._logs.set(t, [...events]);
+    const lastSeq = events.length ? events[events.length - 1].seq : 0;
+    this._nextSeq.set(t, lastSeq);
+    this._flushedSeq.delete(t);
+    this._flush(t);
+    this.delete(f);
+    return true;
+  }
   delete(key) {
     const k = this._safe(key);
     this._logs.delete(k); this._nextSeq.delete(k); this._flushedSeq.delete(k);
