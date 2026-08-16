@@ -90,6 +90,15 @@
   .sess-item .sess-del:hover { color:var(--bad-fg); background:var(--bad-bg); }
   .sess-item .sess-ren { font-size:11px; color:var(--muted); cursor:pointer; padding:2px 6px; border-radius:4px; border:none; background:none; }
   .sess-item .sess-ren:hover { color:var(--accent); }
+  /* 工具调用卡片 (P1#7) */
+  .tool-card { align-self:flex-start; max-width:78%; font-size:12px; border:1px solid var(--border); border-radius:8px; padding:8px 12px; background:var(--card); }
+  .tool-card .tc-name { font-weight:600; color:var(--accent); }
+  .tool-card .tc-args { color:var(--muted); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tool-card .tc-meta { color:var(--muted); margin-top:3px; font-size:11px; }
+  .tool-card .tc-status { font-size:11px; font-weight:600; }
+  .tool-card .tc-status.wait { color:var(--muted); }
+  .tool-card .tc-status.ok { color:var(--ok-fg); }
+  .tool-card .tc-status.fail { color:var(--bad-fg); }
   .side-toggle.active { color:var(--accent); border-color:var(--accent); }
 </style>
 </head>
@@ -171,6 +180,7 @@ async function send(){
             const j=JSON.parse(line.slice(5).trim());
             if(j.type==="delta"){ full+=j.content; agentEl.innerHTML=renderMd(full); msgs.scrollTop=msgs.scrollHeight; }
             else if(j.type==="done"){ full=j.content; agentEl.innerHTML=renderMd(full); msgs.scrollTop=msgs.scrollHeight; }
+            else if(j.type==="tool"){ handleToolEvent(j); }
             else if(j.type==="error"){ addMsg("err", j.error); }
           }catch{}
         }
@@ -178,6 +188,20 @@ async function send(){
     }
   }catch(e){ addMsg("err","请求失败: "+e.message); }
   btn.disabled=false;
+}
+// ===== 工具调用可视化 (P1#7) =====
+const toolCards = {};
+function handleToolEvent(ev){
+  if(ev.type==="start"){
+    const card=document.createElement("div"); card.className="tool-card";
+    card.innerHTML=`<div class="tc-status wait">⏳ 调用中…</div><div class="tc-name">${esc(ev.tool)}</div><div class="tc-args">${esc(JSON.stringify(ev.args||{})).slice(0,120)}</div>`;
+    msgs.querySelector(".empty")?.remove();
+    msgs.appendChild(card); msgs.scrollTop=msgs.scrollHeight;
+    toolCards[ev.tool]=card;
+  } else if(ev.type==="done" && toolCards[ev.tool]){
+    toolCards[ev.tool].innerHTML=`<div class="tc-status ${ev.ok?"ok":"fail"}">${ev.ok?"✓ 完成":"✗ 失败"}</div><div class="tc-name">${esc(ev.tool)}</div><div class="tc-args">${esc(JSON.stringify(ev.args||{})).slice(0,120)}</div><div class="tc-meta">${ev.durationMs}ms${ev.result?(" · "+esc(ev.result).slice(0,80)):""}</div>`;
+    delete toolCards[ev.tool]; msgs.scrollTop=msgs.scrollHeight;
+  }
 }
 function resetSession(){
   if(!confirm("清空当前会话历史?")) return;

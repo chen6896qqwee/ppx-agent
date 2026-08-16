@@ -76,6 +76,7 @@ export class PPXAgent {
     this.toolsEnabled = this.config.tools?.enabled !== false;
     // absorb: hermest notify + interrupt state
     this._notifyCb = null;
+    this._onToolEvent = null; // P1#7
     this._interrupted = false;
     this._lastTurnUsedTools = false;
 
@@ -86,6 +87,8 @@ export class PPXAgent {
   
   // absorb: hermest proactive notify + interrupt API
   setNotify(cb) { this._notifyCb = typeof cb === "function" ? cb : null; }
+  // P1#7: 工具调用过程可视化 - 回调 (tool名, 参数, 耗时, 状态) 供 Web UI 推送
+  setToolEvent(cb) { this._onToolEvent = typeof cb === "function" ? cb : null; }
   notify(message) { if (this._notifyCb) { try { this._notifyCb(String(message)); } catch (e) {} } }
   interrupt() { this._interrupted = true; }
   clearInterrupt() { this._interrupted = false; }
@@ -288,7 +291,10 @@ export class PPXAgent {
 
   // 流式对话: 返回 { text, history } 或回调 onDelta 推送增量
   // 简化: 流式只用于无工具纯对话场景 (工具循环仍走非流式以保证轨迹完整性)
-  async chatStream(userMsg, { sessionKey = "default", onDelta } = {}) {
+  // 流式对话: 返回 { text, history } 或回调 onDelta 推送增量
+  // 支持工具循环: 若消息触发工具调用, 走 _llmWithTools (触发 onTool 事件推送工具活动),
+  // 最终结果作为一次 delta 推送; 否则走 streamChat 逐字流式 [P1#7]
+  async chatStream(userMsg, { sessionKey = "default", onDelta, onTool } = {}) {
     if (!this.llm) return this.chat(userMsg, { sessionKey });
     // 内核自主决策: 高置信简单指令本地处理
     const local = (this.config.agent?.localIntent !== false) ? await this._localIntent(userMsg) : null;
@@ -296,19 +302,32 @@ export class PPXAgent {
     const system = this._context(userMsg);
     const history = this._loadHistory(sessionKey);
     const messages = [{ role: "system", content: system }, ...history, { role: "user", content: String(userMsg) }];
-    let full = "";
+
+    // 挂工具事件透传 (供 onTool 推送)
+    const prevCb = this._onToolEvent;
+    if (onTool) this._onToolEvent = (ev) => { try { onTool(ev); } catch {} };
+
+    let reply;
     try {
-      full = await this.llm.streamChat(messages, {
-        onDelta: (d) => { full += d; onDelta && onDelta(d); },
-      });
+      // 优先走工具循环 (能触发 onTool 事件 + 支持工具); 无工具时 _llmWithTools 同样返回最终文本
+      reply = await this._llmWithTools(messages, this.llm);
     } catch (e) {
-      // 流式失败降级为非流式
-      warn("流式失败, 降级非流式:", e.message);
-      return this.chat(userMsg, { sessionKey });
+      warn("工具循环失败, 降级流式:", e.message);
+      try {
+        reply = await this.llm.streamChat(messages, {
+          onDelta: (d) => { onDelta && onDelta(d); },
+        });
+      } catch (e2) {
+        warn("流式也失败, 降级非流式:", e2.message);
+        reply = await this.chat(userMsg, { sessionKey });
+      }
+    } finally {
+      this._onToolEvent = prevCb;
     }
-    this._pushTurn(sessionKey, String(userMsg), full);
-    await this.memory.recordTurn(userMsg, full);
-    return full;
+    if (onDelta) onDelta(reply);
+    this._pushTurn(sessionKey, String(userMsg), reply);
+    await this.memory.recordTurn(userMsg, reply);
+    return reply;
   }
 
   // 多 provider 回退: 依次尝试, 失败切下一个
@@ -341,15 +360,18 @@ export class PPXAgent {
   async _runTool(name, args, llmInstance) {
     const t0 = Date.now();
     this._lastTurnUsedTools = true;
+    if (this._onToolEvent) { try { this._onToolEvent({ type: "start", tool: name, args, ts: Date.now() }); } catch {} }
     const result = await this.tools.call(name, args, { agent: this });
+    const ok = !result.startsWith(TOOL_ERROR_PREFIX);
     this.traces.record({
       tool: name,
       args,
       result: result.slice(0, 800),
-      ok: !result.startsWith(TOOL_ERROR_PREFIX),
+      ok,
       durationMs: Date.now() - t0,
-      error: result.startsWith(TOOL_ERROR_PREFIX) ? result : null,
+      error: ok ? null : result,
     });
+    if (this._onToolEvent) { try { this._onToolEvent({ type: "done", tool: name, args, ok, durationMs: Date.now() - t0, result: result.slice(0, 300), ts: Date.now() }); } catch {} }
     return result;
   }
 

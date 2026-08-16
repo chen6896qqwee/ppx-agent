@@ -130,6 +130,18 @@
 - combined 让 openclaw 和 dsh 互为冗余, 一个引擎挂了自动切换, 皮皮虾对话不中断
 - 想单独用某个引擎时, 仍可用 backend=openclaw / backend=deepseek 的单引擎 provider
 
+## v0.6.4 (2026-08-16) — Web UI 工具调用可视化 (EVALUATION-v0.6-final P1#7)
+
+### P1#7 工具调用过程可视化
+- agent: 新增 setToolEvent() 回调 + _runTool 触发 start/done 事件 (工具名/参数/耗时/状态/结果), 供 Web UI 推送
+- agent.chatStream 改造: 从纯流式改为优先走 _llmWithTools 工具循环 (能触发 onTool 事件), 最终结果一次推送; 失败降级 streamChat 流式, 再降级非流式 chat
+- http.js /message/stream: 新增 onTool 回调, 推送 SSE type:"tool" 事件
+- Web UI: send() 处理 tool 事件, 显示工具调用卡片 (⏳调用中→✓完成/✗失败, 含参数+耗时+结果摘要)
+
+### 验证
+- 全量测试: 104 个 101 过 0 失败 3 跳过 (网络 gate)
+- 新增 tool-vis.test.js (2) 覆盖 chatStream 工具循环 + onTool 事件
+
 ## v0.6.3 (2026-08-16) — Web UI 多会话管理 (EVALUATION-v0.6-final P1#6)
 
 ### P1#6 多会话管理

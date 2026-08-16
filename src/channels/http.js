@@ -151,6 +151,7 @@ export class HttpChannel extends Channel {
           const reply = await this.agent.chatStream(String(text), {
             sessionKey,
             onDelta: (d) => { full += d; try { send({ type: "delta", content: d }); } catch {} },
+            onTool: (ev) => { try { send({ type: "tool", ...ev }); } catch {} }, // P1#7 工具调用可视化
           });
           const finalContent = full || reply;
           send({ type: "done", content: finalContent, sessionId: sessionKey });
