@@ -47,6 +47,22 @@
       "api_key_env": "DASHSCOPE_API_KEY",
       "model": "qwen-turbo",
       "timeout_ms": 180000
+    },
+    {
+      "id": "qwen-vl",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "model": "qwen-vl-max",
+      "vision": true,
+      "timeout_ms": 180000
+    },
+    {
+      "id": "lmstudio",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "api_key": "lm-studio",
+      "model": "gemma-4-e2b-uncensored-hauhaucs-aggressive-q8_k_p",
+      "vision": true,
+      "timeout_ms": 180000
     }
   ],
   "memory": {
@@ -57,6 +73,11 @@
     "base_importance": 10,
     "compile_threshold": 4.5,
     "forget_speed": 1
+  },
+  "embedding": {
+    "base_url": "http://127.0.0.1:1234/v1",
+    "api_key": "lm-studio",
+    "model": "text-embedding-nomic-embed-text-v1.5"
   },
   "experience": {
     "enabled": true
@@ -76,10 +97,19 @@
       "auth_token": ""
     },
     "feishu": {
-      "enabled": false
+      "enabled": false,
+      "appId": "",
+      "appSecret": "",
+      "verifyToken": ""
     },
     "wechat": {
-      "enabled": false
+      "enabled": false,
+      "path": "/wechat/webhook",
+      "token": "",
+      "encodingAESKey": "",
+      "corpId": "",
+      "corpSecret": "",
+      "agentId": ""
     }
   },
   "security": {

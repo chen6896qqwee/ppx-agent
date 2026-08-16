@@ -1,25 +1,25 @@
-// src/agent/index.js - Agent 引擎 (皮皮虾核心) v0.2 含工具调用
+﻿// src/agent/index.js - Agent 引擎 (皮皮虾核心) v0.2 含工具调用
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import fs from "node:fs";
 
-import { Healer } from "../selfheal/healer.js";
-import { FactStore, MemoryTicker, Experience, L0Recorder, SceneStore, PersonaStore } from "../memory/index.js";
-import { SessionStore } from "../memory/session.js";
-import { Persona } from "../persona/index.js";
-import { LLMClient } from "../llm/index.js";
-import { ToolCatalog, registerBuiltinTools, registerAdvancedTools, Scheduler, TOOL_ERROR_PREFIX } from "../tools/index.js";
-import { registerMethodTools, registerSelfmodTools } from "../tools/index.js";
-import { readJson, readText, ensureDir, logicalDay } from "../utils/store.js";
+import { TOOL_ERROR_PREFIX } from "../tools/index.js";
+import { imageFileToDataUrl } from "../tools/builtin.js";
+import { logicalDay } from "../utils/store.js";
+import { loadConfig } from "../config/index.js";
+import { LLMClient } from "../llm/client.js";
 import { info, warn, error } from "../utils/logger.js";
-import { Traces } from "../utils/trace.js";
+import { Context, compose, loadPlugins } from "../plugin/index.js";
+import { builtinPlugins } from "../plugin/builtin.js";
+import { registerMcpTools } from "../mcp/index.js";
+
+// 热重载用 LLM 客户端构造 (与 plugin/builtin.llmPlugin 行为一致)
+const LLMClientForReload = LLMClient;
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAX_TOOL_ROUNDS = 8;
 const TOOL_RESULT_BUDGET = 4000; // L4 toolResultBudget: 工具结果超过此长度裁剪, 防撑爆上下文
 const MAX_TOOL_ERROR_RETRY = 2;
-const MAX_SESSION_HISTORY = 20;   // 最大会话历史条数(条)
-const HISTORY_TOKEN_BUDGET = 4000; // 会话历史 token 预算
+// 会话历史条数/token 预算已迁到 config.memory (max_history_items / history_token_budget)
 
 // 估算 token: 中文字符约1字=0.6token, 1token约4字符
 function estimateTokens(s){ return Math.ceil(String(s||'').length / 1.6); }
@@ -33,56 +33,94 @@ export function trimToolResult(r) {
   return head + `\n...[结果已裁剪: 共 ${s.length} 字符, 保留头尾 ${TOOL_RESULT_BUDGET}]...\n` + tail;
 }
 
+// 多模态: 提取 user 消息中的图片路径并同步读图, 注入为 OpenAI 视觉格式的 content 数组。
+// 仅当当前 LLM 是 http 后端且 provider 标记 vision=true 时生效 (openclaw/dsh 走文本围栏不传图)。
+// 返回 string (无图/不支持) 或 [{type:text}, {type:image_url}...]
+function _visionUserContent(llm, root, userMsg) {
+  const text = String(userMsg);
+  if (!llm || llm.backend !== "http" || !llm.vision) return text;
+  const paths = [];
+  for (const m of text.matchAll(/[^\s"'`，。；;：:,，()（）]+\.(?:png|jpe?g|gif|webp|bmp)/gi)) {
+    paths.push(m[0]);
+  }
+  if (!paths.length) return text;
+  const content = [{ type: "text", text }];
+  for (const p of [...new Set(paths)].slice(0, 4)) {
+    try {
+      const dataUrl = imageFileToDataUrl(root, p);
+      content.push({ type: "image_url", image_url: { url: dataUrl } });
+    } catch { /* 读图失败静默跳过, 保留纯文本 */ }
+  }
+  return content.length > 1 ? content : text;
+}
+
+// 工具结果 → OpenAI 消息 content: 图片 data URL 转 image_url 块 (多模态), 否则文本裁剪
+export function toToolContent(result) {
+  const s = String(result || "");
+  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(s)) {
+    return [{ type: "image_url", image_url: { url: s } }];
+  }
+  return trimToolResult(s);
+}
+
 export class PPXAgent {
-  constructor({ root = ROOT, configFile = null } = {}) {
+  constructor({ root = ROOT, configFile = null, plugins = [], dataDir = null } = {}) {
     this.root = root;
-    this.dataDir = path.join(root, "data");
+    // dataDir 可覆盖 (军团 worker 用独立数据目录, 避免多进程互踩)
+    this.dataDir = dataDir || path.join(root, "data");
     this.config = this._loadConfig(configFile);
-
-    this.healer = new Healer(root);
-    this.healer.markDirty();
-    this.health = this.healer.heal();
-
-    this.persona = new Persona(root);
-    this.facts = new FactStore(this.dataDir, this.config.memory || {});
-    this.experience = new Experience(this.dataDir);
-    // 会话事件日志 (唯一事实源) 先建, 供 memory-ticker 派生今日视图 + L0 代理
-    this.sessionStore = new SessionStore(this.dataDir);
-    this.memory = new MemoryTicker(this.dataDir, this.facts, null, this.sessionStore);
-
-    // 多 provider 回退: 优先有 API key 的 (各模型 API), 本地模型兜底
-    this.llm = this._resolveLLM();
-    this.allProviders = this._resolveAllLLMs();
     this.userName = this.config.user?.name || "兄弟";
 
-    // 注入 LLM 摘要器给记忆压缩 (真摘要, 非堆叠)
+    // 插件装配: ctx 预置基础服务, 按顺序装配内置 + 用户插件 (一切皆插件)
+    this.ctx = new Context();
+    this.ctx.provide("root", root);
+    this.ctx.provide("dataDir", this.dataDir);
+    this.ctx.provide("config", this.config);
+    this.ctx.provide("userName", this.userName);
+    this.ctx.provide("agent", this);
+    // 装配顺序: 内置插件 → 用户插件目录(声明式) → 构造函数传入插件(编程式)
+    const pluginsDir = path.join(root, this.config.plugins?.dir || "plugins");
+    compose(this.ctx, [...builtinPlugins, ...loadPlugins(pluginsDir), ...plugins]);
+
+    // 从 ctx 取服务, 设置公开属性 (向后兼容, 外部代码不变)
+    this.healer = this.ctx.consume("healer");
+    this.health = this.ctx.consume("health");
+    this.persona = this.ctx.consume("persona");
+    this.facts = this.ctx.consume("facts");
+    this.experience = this.ctx.consume("experience");
+    this.sessionStore = this.ctx.consume("sessions");
+    this.memory = this.ctx.consume("memory");
+    this.llm = this.ctx.consume("llm");
+    this.allProviders = this.ctx.consume("allProviders");
+    this.l0 = this.ctx.consume("l0");
+    this.scenes = this.ctx.consume("scenes");
+    this.personaStore = this.ctx.consume("personaStore");
+    this.traces = this.ctx.consume("traces");
+    this.tools = this.ctx.consume("tools");
+    this.scheduler = this.ctx.consume("scheduler");
+    this.toolsEnabled = this.ctx.consume("toolsEnabled");
+
+    // 注入 LLM 摘要器/提炼器 (依赖 agent 方法, 装配后注入)
     this.memory.summarizer = (raw) => this._summarizeMemory(raw);
-    // P1#9: LLM 结构化提炼
     this.memory.setExtractor((u, a) => this._extractMemory(u, a));
 
-    // 记忆系统: 腾讯风格四层 (L0对话→L1原子→L2场景→L3画像); L0 由 session 派生
-    this.l0 = new L0Recorder(this.sessionStore, this.dataDir);
-    this.scenes = new SceneStore(this.dataDir);
-    this.personaStore = new PersonaStore(this.dataDir, { userName: this.userName });
-
-    // 工具系统
-    this.traces = new Traces(this.dataDir);
-
-    this.tools = new ToolCatalog();
-    registerBuiltinTools(this.tools, { rootDir: this.root, facts: this.facts, memory: this.memory });
-    this.scheduler = new Scheduler(this.dataDir);
-    registerAdvancedTools(this.tools, { dataDir: this.dataDir, scheduler: this.scheduler, onMemoryNote: (note) => this.facts.add(note, { source: "schedule" }) });
-    registerMethodTools(this.tools);
-    // absorb: deepseek Capability Seam + skill loader (self-modification)
-    registerSelfmodTools(this.tools, { skillsDir: path.join(this.root, "skills") });
-    this.toolsEnabled = this.config.tools?.enabled !== false;
     // absorb: hermest notify + interrupt state
     this._notifyCb = null;
     this._onToolEvent = null; // P1#7
     this._interrupted = false;
     this._lastTurnUsedTools = false;
+    this._mcp = null; // MCP 连接句柄 (connectMcp 后赋值)
+    this._personaBuilt = null; // L3 画像上次生成日期 (跨天刷新)
 
-    // 会话事件日志 (append-only) 是唯一事实源; 历史由 SessionStore.append 写入 + deriveMessages 投影
+    // 可选: 启动时自动连接 MCP 服务器 (config.mcp.auto_connect = true 时非阻塞连接)
+    if (this.config.mcp?.auto_connect && this.config.mcp.servers?.length) {
+      this.connectMcp()
+        .then((n) => { if (n) info(`[mcp] 自动连接 ${n} 个 MCP 工具`); })
+        .catch((e) => warn(`[mcp] 自动连接失败: ${e.message}`));
+    }
+
+    // 首次启动生成 L3 画像 (零依赖高频词统计, 同步快, 不调 LLM)
+    this._maybeRefreshPersona();
   }
 
 
@@ -94,105 +132,9 @@ export class PPXAgent {
   notify(message) { if (this._notifyCb) { try { this._notifyCb(String(message)); } catch (e) {} } }
   interrupt() { this._interrupted = true; }
   clearInterrupt() { this._interrupted = false; }
-// 选第一个可用的 provider (有 key 或本地服务)
-
-  // 返回所有可用的 LLMClient (按配置顺序)
-  _resolveAllLLMs() {
-    const provs = this.config.providers || [];
-    const clients = [];
-    for (const prov of provs) {
-      const key = prov.api_key || process.env[prov.api_key_env];
-      const isLocal = /127\.0\.0\.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
-      if (key || isLocal || prov.backend === "openclaw" || prov.id === "openclaw" || prov.backend === "deepseek") clients.push(new LLMClient(prov));
-    }
-    return clients;
-  }
-
-  _resolveLLM() {
-    const provs = this.config.providers || [];
-    for (const prov of provs) {
-      const key = prov.api_key || process.env[prov.api_key_env];
-      const isLocal = /127.0.0.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
-      if (key || isLocal || prov.backend === "openclaw" || prov.id === "openclaw" || prov.backend === "deepseek") {
-        return new LLMClient(prov);
-      }
-    }
-    return null;
-  }
 
   _loadConfig(configFile) {
-    const candidates = [configFile, path.join(this.root, "config", "ppx.json"), path.join(this.root, "config", "ppx.yaml")].filter(Boolean);
-    for (const c of candidates) {
-      if (fs.existsSync(c)) {
-        if (c.endsWith(".json")) return readJson(c, {});
-        if (c.endsWith(".yaml") || c.endsWith(".yml")) return this._parseYaml(c);
-      }
-    }
-    return {};
-  }
-
-  _parseYaml(file) {
-    const text = readText(file);
-    const lines = text.split("\n").map((raw) => {
-      const line = raw.replace(/\s*#.*$/, "").trimEnd();
-      return { indent: line.search(/\S|$/), text: line.trim() };
-    }).filter((l) => l.text && !l.text.startsWith("#"));
-
-    const root = {};
-    const stack = []; // { indent, obj, key }
-    let arrIndent = -1;
-
-    for (const { indent, text } of lines) {
-      // 数组项: "- key: val" 或 "- val"
-      const arrM = text.match(/^-\s+/);
-      if (arrM) {
-        const itemText = text.slice(arrM[0].length);
-        // 找所属数组
-        while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
-        const parent = stack.length ? stack[stack.length - 1].obj : root;
-        const arrKey = stack.length ? stack[stack.length - 1].arrKey : null;
-        if (!arrKey) continue;
-        if (!Array.isArray(parent[arrKey])) parent[arrKey] = [];
-        const kv = itemText.match(/^([\w-]+):\s*(.*)$/);
-        const item = {};
-        if (kv) {
-          item[kv[1]] = parseScalar(kv[2]);
-          parent[arrKey].push(item);
-          // 继续往里填
-          stack.push({ indent, obj: item, arrKey: null });
-        } else {
-          parent[arrKey].push(parseScalar(itemText));
-        }
-        continue;
-      }
-
-      const m = text.match(/^([\w-]+):\s*(.*)$/);
-      if (!m) continue;
-      const [, key, val] = m;
-      const v = val.trim();
-      while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
-      const parent = stack.length ? stack[stack.length - 1].obj : root;
-      if (v === "") {
-        parent[key] = {};
-        stack.push({ indent, obj: parent[key], arrKey: null });
-      } else {
-        parent[key] = parseScalar(v);
-        stack.push({ indent, obj: parent[key] ?? {}, arrKey: key });
-        // 若值非对象(标量), arrKey 指向该标量会在数组项里误用, 重置
-        if (typeof parent[key] !== "object") stack[stack.length - 1].arrKey = null;
-      }
-    }
-    return root;
-
-    function parseScalar(v) {
-      if (v === "") return "";
-      if (/^[\[{]/.test(v)) { try { return JSON.parse(v.replace(/'/g, '"')); } catch {} }
-      if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
-      if (v === "true") return true;
-      if (v === "false") return false;
-      if (v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1);
-      return v;
-    }
+    return loadConfig(this.root, configFile);
   }
 
   // P1#9: LLM 结构化记忆提炼 - 从高信号对话提取关键事实/偏好/待办 (替代简单启发式)
@@ -203,7 +145,10 @@ export class PPXAgent {
       { role: "user", content: "用户: " + String(user).slice(0, 800) + "\n助手: " + String(assistant).slice(0, 800) },
     ]);
     const text = String(r.content || "").trim();
-    const m = text.match(/[[sS]*]/);
+    // 容忍模型把 JSON 包在 markdown 代码块里
+    const cleaned = text.replace(/```(?:json|JSON)?\s*/g, "").replace(/```/g, "").trim();
+    // 提取第一个最外层 JSON 数组 (贪婪匹配到最后一个 ], 容忍内容里的嵌套方括号)
+    const m = cleaned.match(/\[[\s\S]*\]/);
     if (!m) return [];
     try {
       const arr = JSON.parse(m[0]);
@@ -221,17 +166,84 @@ export class PPXAgent {
     return r.content;
   }
 
+  // P1: LLM 查询扩展 - 把问题改写成多个词面变体, 补语义召回 (零依赖, 复用已有 LLM)
+  async _expandQuery(q) {
+    const r = await this.llm.chat([
+      { role: "system", content: "你是查询扩展器。把用户的问题改写成 3 个语义相近但词面不同的检索短语(用于语义记忆检索), 每行一个, 不要序号、不要解释。" },
+      { role: "user", content: String(q).slice(0, 300) },
+    ]);
+    return String(r.content || "")
+      .split(/\n+/)
+      .map((s) => s.replace(/^[\d\.\-、)）]\s*/, "").trim())
+      .filter((s) => s && s !== String(q).trim())
+      .slice(0, 3);
+  }
+
+  // P1: 语义记忆检索 - 原始查询 + LLM 扩展变体做 RRF 融合; 无 LLM 时退化为单查询
+  async _memoryQuery(q, { limit = 5, scope = null } = {}) {
+    // 有 embedder 时走 dense 语义检索 (与 BM25 RRF 融合), 否则 LLM 扩展 + RRF
+    if (this.facts.embedder) {
+      return this.facts.querySemantic(q, { limit, scope });
+    }
+    const variants = [q];
+    if (this.llm) {
+      try { variants.push(...(await this._expandQuery(q))); } catch { /* LLM 失败静默降级 */ }
+    }
+    if (variants.length === 1) return this.facts.query(q, { limit, scope });
+    return this.facts.queryMulti(variants, { limit, scope });
+  }
+
   // ---- 多轮会话历史 (吸收 dsh "会话即事实源") ----
   // 历史从事件日志投影, 再按预算裁剪 (裁剪只发生在投影层, 日志本身不可变)
+  // v0.6.6 优化: 信息量感知裁剪 (学自 Claude Code Microcompact 思路)
+  //   旧版: 纯按条数硬截 + 尾部 token 预算, 可能裁掉关键决策/工具结果轮次
+  //   新版: 优先保留"含关键信息"的轮次(指令/数字/路径/结论/工具结果), 纯寒暄让位
+  _historyPriority(m) {
+    const s = String(m?.content || "");
+    if (!s) return 0;
+    let p = 0;
+    // 长消息(含工具结果/详细决策)权重高
+    if (s.length > 120) p += 2;
+    // 含指令/结论/数字/路径/文件等关键信号
+    if (/[查|算|计算|写|建|改|创建|删除|修复|总结|分析|设置|配置|执行|运行|启动|停止|提交|部署|安装|生成|编译|测试]/.test(s)) p += 2;
+    if (/[0-9]{2,}|[%.¥$元%]|[:：][0-9]/.test(s)) p += 1;
+    if (/[A-Za-z]:[\\\/]|\.(js|py|md|json|txt|ts|go|rs|cpp|java|log)\b/.test(s)) p += 2;
+    if (/失败|错误|报错|异常|成功|完成|结果|结论|决定|方案|建议/.test(s)) p += 2;
+    // 纯寒暄/简短确认权重低
+    if (/^(你好|hi|hello|在吗|谢谢|好的|ok|嗯|是的|对|收到|知道|了解|再见|拜拜)/i.test(s.trim())) p -= 3;
+    return p;
+  }
   _trimHistory(hist) {
     let h = [...hist];
-    while (h.length > MAX_SESSION_HISTORY) h.shift();
-    let total = 0, dropFrom = 0;
-    for (let i = h.length - 1; i >= 0; i--) {
-      total += estimateTokens(h[i].content);
-      if (total > HISTORY_TOKEN_BUDGET) { dropFrom = i + 1; break; }
+    const maxItems = Number(this.config.memory?.max_history_items) || 40;
+    const tokenBudget = Number(this.config.memory?.history_token_budget) || 4000;
+    // 1) 条数上限: 超限时按信息量淘汰 (低信息量优先, 从旧到新)
+    if (h.length > maxItems) {
+      const scored = h.map((m, i) => ({ m, i, p: this._historyPriority(m) }));
+      scored.sort((a, b) => (a.p - b.p) || (a.i - b.i));
+      const drop = scored.length - maxItems;
+      const dropped = new Set(scored.slice(0, drop).map((x) => x.i));
+      scored.sort((a, b) => a.i - b.i);
+      h = scored.filter((x) => !dropped.has(x.i)).map((x) => x.m);
     }
-    if (dropFrom > 0) h = h.slice(dropFrom);
+    // 2) token 预算: 信息量感知裁剪 (替代旧版"丢最旧前缀")
+    //    必保最近一条, 其余按信息量从高到低补足, 低信息量轮次让位
+    let total = h.reduce((a, m) => a + estimateTokens(m.content), 0);
+    if (total > tokenBudget) {
+      const keep = new Set();
+      let used = 0;
+      const lastIdx = h.length - 1;
+      keep.add(lastIdx); used += estimateTokens(h[lastIdx].content);
+      const rest = h.slice(0, lastIdx)
+        .map((m, i) => ({ m, i, p: this._historyPriority(m) }))
+        .sort((a, b) => (b.p - a.p) || (a.i - b.i));
+      for (const { m, i } of rest) {
+        const t = estimateTokens(m.content);
+        if (used + t > tokenBudget) continue;
+        keep.add(i); used += t;
+      }
+      h = h.filter((_, i) => keep.has(i));
+    }
     return h;
   }
 
@@ -255,41 +267,68 @@ export class PPXAgent {
 
   // 组装记忆上下文
   _context(userMsg) {
-    const base = this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context() + "\n\n" + this.experience.context();
-    const CITATION_RULE = "\n\n[CITATION] When you state facts from web_search/http_request, cite the source URL right after the claim. Never fabricate sources; if unsure of origin, say you are not sure.";
+    const base = this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context(userMsg) + "\n\n" + this.experience.context() + this._l3Context();
+    // 引用规则 + 额外 system 内容均可配置 (agent.citation_rule / agent.system_extra)
+    const citation = this.config.agent?.citation_rule || "";
+    const extra = this.config.agent?.system_extra || "";
     const active = this.scenes.activeContext(userMsg || "");
     const baseCtx = active ? base + "\n\n" + active : base;
-    return baseCtx + CITATION_RULE;
+    return [baseCtx, citation, extra].filter(Boolean).join("\n\n");
+  }
+
+  // L3 画像注入: 已生成的用户画像 + agent 自我画像 (未生成返回 "")
+  _l3Context() {
+    try {
+      const parts = [];
+      const u = this.personaStore.userPersona();
+      const a = this.personaStore.agentPersona();
+      if (u) parts.push(u);
+      if (a) parts.push(a);
+      return parts.length ? "\n\n" + parts.join("\n\n") : "";
+    } catch { return ""; }
+  }
+
+  // L3 画像刷新: 跨天触发 (内存日期标记, 每天首次对话刷新一次)
+  _maybeRefreshPersona() {
+    const today = logicalDay();
+    if (this._personaBuilt === today) return;
+    this._personaBuilt = today;
+    try {
+      this.personaStore.buildUserPersona(this.facts.list(), { force: true });
+      this.personaStore.buildAgentPersona(this.experience.lessons, { force: true });
+    } catch (e) {
+      warn("L3 画像生成失败:", e.message);
+    }
+  }
+
+  // 找视觉 provider: 当前 LLM 若是 vision 直接用, 否则从 allProviders 找第一个 vision
+  _visionLLM() {
+    if (this.llm && this.llm.vision) return this.llm;
+    return (this.allProviders || []).find((p) => p.vision) || null;
+  }
+
+  // 多模态 user 消息内容: 有图且存在 vision provider 时返回 content 数组, 否则纯文本
+  _userContent(userMsg) {
+    return _visionUserContent(this._visionLLM(), this.root, userMsg);
   }
 
   // 对话主入口 (含工具调用循环)
-  async chat(userMsg, { persist = true, sessionKey = "default" } = {}) {
-    const system = this._context(userMsg);
-    // 组装: [system] + [历史] + [当前问题]
-    const history = this._loadHistory(sessionKey);
-    const messages = [{ role: "system", content: system }, ...history];
-
-    // 防止重复: 若上一条已是相同 user 消息则跳过
-    const hist = this._getSession(sessionKey);
-    const isRepeat = hist[hist.length - 1]?.role === "user" && hist[hist.length - 1].content === String(userMsg);
-    if (!isRepeat) messages.push({ role: "user", content: String(userMsg) });
-
+  async chat(userMsg, { persist = true, sessionKey = "default", mode = null } = {}) {
+    this.clearInterrupt(); // 新一轮对话开始, 复位上一轮的中断状态
     let reply;
     // 内核自主决策: 高置信简单指令本地处理, 不调 LLM
     const local = (this.config.agent?.localIntent !== false) ? await this._localIntent(userMsg) : null;
     if (local) {
       reply = local;
-    } else if (this.llm) {
+    } else {
+      // 模式分发: 编排策略可插拔 (react/single, 未来 plan-exec/multi-agent/graph 等)
+      const modeName = mode || this.config.agent?.mode || "react";
       try {
-        reply = await this._llmWithFallback(messages);
+        reply = await this.ctx.consume("modes").run(modeName, this, userMsg, { sessionKey });
       } catch (e) {
         error("LLM 调用失败:", e.message);
         reply = `[皮皮虾] LLM 调用失败: ${e.message}`;
       }
-    } else {
-      reply = "[皮皮虾] 未配置模型 provider，仅本地记忆 + 工具模式。配置 config/ppx.yaml 后启用完整对话。";
-      // 离线时也尝试简单工具: 若用户意图明确调工具
-      reply = await this._offlineToolRoute(userMsg) || reply;
     }
 
     const usedTools = this._lastTurnUsedTools;
@@ -302,24 +341,29 @@ export class PPXAgent {
       // L2 场景归档: 从新记忆里找需要归档的
       this._archiveScenes();
       this._learnFromTurn(userMsg, reply);
+      // L3 画像: 跨天刷新 (吸收新记忆/经验)
+      this._maybeRefreshPersona();
     }
     return reply;
   }
 
 
   // 流式对话: 返回 { text, history } 或回调 onDelta 推送增量
-  // 简化: 流式只用于无工具纯对话场景 (工具循环仍走非流式以保证轨迹完整性)
-  // 流式对话: 返回 { text, history } 或回调 onDelta 推送增量
   // 支持工具循环: 若消息触发工具调用, 走 _llmWithTools (触发 onTool 事件推送工具活动),
   // 最终结果作为一次 delta 推送; 否则走 streamChat 逐字流式 [P1#7]
   async chatStream(userMsg, { sessionKey = "default", onDelta, onTool } = {}) {
     if (!this.llm) return this.chat(userMsg, { sessionKey });
+    this.clearInterrupt(); // 新一轮对话开始, 复位中断状态
     // 内核自主决策: 高置信简单指令本地处理
     const local = (this.config.agent?.localIntent !== false) ? await this._localIntent(userMsg) : null;
     if (local) { onDelta && onDelta(local); return local; }
     const system = this._context(userMsg);
     const history = this._loadHistory(sessionKey);
-    const messages = [{ role: "system", content: system }, ...history, { role: "user", content: String(userMsg) }];
+    const messages = [{ role: "system", content: system }, ...history, { role: "user", content: this._userContent(userMsg) }];
+
+    // 多模态路由: 消息含图片时优先 vision provider (否则图片发到文本后端无意义)
+    const hasImage = messages.some((m) => Array.isArray(m.content) && m.content.some((c) => c && c.type === "image_url"));
+    const activeLLM = hasImage ? (this._visionLLM() || this.llm) : this.llm;
 
     // 挂工具事件透传 (供 onTool 推送)
     const prevCb = this._onToolEvent;
@@ -327,22 +371,22 @@ export class PPXAgent {
 
     let reply;
     try {
-      // 优先走工具循环 (能触发 onTool 事件 + 支持工具); 无工具时 _llmWithTools 同样返回最终文本
-      reply = await this._llmWithTools(messages, this.llm);
-    } catch (e) {
-      warn("工具循环失败, 降级流式:", e.message);
-      try {
-        reply = await this.llm.streamChat(messages, {
+      // 无工具开启: 直连后端可逐字流式 (恢复打字机效果); 有工具时走工具循环保轨迹完整 [复审 P2]
+      if (!this.toolsEnabled && activeLLM.supportsStream) {
+        reply = await activeLLM.streamChat(messages, {
           onDelta: (d) => { onDelta && onDelta(d); },
         });
-      } catch (e2) {
-        warn("流式也失败, 降级非流式:", e2.message);
-        reply = await this.chat(userMsg, { sessionKey });
+      } else {
+        reply = await this._llmWithTools(messages, activeLLM);
+        if (onDelta) onDelta(reply);
       }
+    } catch (e) {
+      warn("chatStream 失败, 降级非流式 chat:", e.message);
+      reply = await this.chat(userMsg, { sessionKey });
+      if (onDelta) onDelta(reply);
     } finally {
       this._onToolEvent = prevCb;
     }
-    if (onDelta) onDelta(reply);
     this._pushTurn(sessionKey, String(userMsg), reply);
     await this.memory.recordTurn(userMsg, reply);
     return reply;
@@ -352,6 +396,20 @@ export class PPXAgent {
   // 多 provider 并发健康探测 + 回退: 只对可用 provider 调用, 避免串行等待 180s 超时
   async _llmWithFallback(seedMessages) {
     let clients = this.allProviders.length ? this.allProviders : [this.llm];
+    // 多模态路由: 消息含图片 (image_url 块) 时, 优先 vision provider, 避免图片发到文本后端浪费
+    const hasImage = seedMessages.some((m) => Array.isArray(m.content) && m.content.some((c) => c && c.type === "image_url"));
+    if (hasImage) {
+      const visionClients = clients.filter((c) => c.vision);
+      if (visionClients.length) clients = visionClients;
+      else info("消息含图片但无 vision provider, 图片将无法被模型理解 (请配置 vision: true 的 provider)");
+    }
+    // 工具类任务: 优先原生 tool_calls 后端 (http)。
+    // openclaw 是完整 agent 运行时, 会拒绝围栏协议(视为伪协议); 实测 http 原生 tool_calls 全链路通过。
+    if (this.toolsEnabled) {
+      const native = clients.filter((c) => c.supportsNativeToolCalls);
+      const fence = clients.filter((c) => !c.supportsNativeToolCalls);
+      if (native.length) clients = [...native, ...fence];
+    }
     if (clients.length > 1) {
       try {
         const states = await Promise.all(clients.map((c) => c.health ? c.health() : Promise.resolve(true)));
@@ -430,7 +488,7 @@ export class PPXAgent {
             durationMs: Date.now() - t0,
             error: result.startsWith(TOOL_ERROR_PREFIX) ? result : null,
           });
-          messages.push({ role: "tool", tool_call_id: tc.id, content: trimToolResult(result) });
+          messages.push({ role: "tool", tool_call_id: tc.id, content: toToolContent(result) });
           if (result.startsWith(TOOL_ERROR_PREFIX)) errors.push(result);
         }
       }
@@ -462,10 +520,10 @@ export class PPXAgent {
     if (/^(现在)?(几点|时间|日期|几号|今天|星期几)[!?。？]*$/i.test(m)) {
       return `[工具] ${await this.tools.call("get_time", {})}`;
     }
-    // 记忆查询: 你记得XXX / 上次聊过XXX
+    // 记忆查询: 你记得XXX / 上次聊过XXX (P1: LLM 查询扩展 + RRF 融合补语义召回)
     if (/^(你)?(记得|还记得|上次聊过|关于)[:：]?\s*(.+)/i.test(m)) {
       const q = m.replace(/^(你)?(记得|还记得|上次聊过|关于)[:：]?\s*/i, "").trim();
-      const res = await this.facts.query(q || m, { limit: 3 });
+      const res = await this._memoryQuery(q || m, { limit: 3 });
       return res.length ? "我记得:\n" + res.map(r => `- ${r.content}`).join("\n") : `(记忆里没找到关于"${q || m}"的)`;
     }
     // 记住 XX
@@ -516,6 +574,67 @@ export class PPXAgent {
     }
   }
 
+  // P3: 自我进化闭环 - 回放近期失败轨迹, LLM 提炼经验教训进经验库 (轨迹 → 经验 → 注入上下文)
+  // 复用已有 experience.learn, 把「哪一步坏了」沉淀为可复用教训
+  async refine({ limit = 20 } = {}) {
+    if (!this.llm) return { distilled: 0, reason: "无 LLM" };
+    const failed = this.traces.read(undefined, limit).filter((t) => !t.ok);
+    if (failed.length < 2) return { distilled: 0, reason: "失败轨迹不足" };
+    const summary = failed
+      .map((t) => `工具 ${t.tool}: ${String(t.error || t.result || "").slice(0, 160)}`)
+      .join("\n");
+    let lesson;
+    try {
+      const r = await this.llm.chat([
+        { role: "system", content: "你是经验提炼器。从失败的工具调用轨迹中提炼一条可复用的经验教训, 一句话说清: 什么场景、为什么失败、下次怎么做。只输出这一句话, 不要解释。" },
+        { role: "user", content: summary.slice(0, 2000) },
+      ]);
+      lesson = String(r.content || "").trim();
+    } catch { lesson = ""; }
+    if (!lesson) return { distilled: 0, reason: "LLM 未产出经验" };
+    this.experience.learn({ task: "自动提炼", lesson, tags: ["auto-refine"] });
+    info(`[refine] 学到经验: ${lesson}`);
+    return { distilled: 1, lesson };
+  }
+
+  // P2: 自我进化闭环 (下) - 从成功轨迹自动提炼可复用 Skill
+  // 轨迹 → 高频成功工具模式 → LLM 提炼 → 复用 create_skill 落盘 skills/<name>/SKILL.md
+  // 与 refine() (失败→经验) 互补, 形成「失败学教训 + 成功沉淀技能」完整闭环
+  async refineSkill({ limit = 50, minFreq = 2 } = {}) {
+    if (!this.llm) return { created: 0, reason: "无 LLM" };
+    const ok = this.traces.read(undefined, limit).filter((t) => t.ok);
+    if (ok.length < minFreq) return { created: 0, reason: "成功轨迹不足" };
+    // 找高频成功工具 (出现 >= minFreq 次)
+    const freq = {};
+    for (const t of ok) freq[t.tool] = (freq[t.tool] || 0) + 1;
+    const hot = Object.entries(freq).filter(([, n]) => n >= minFreq).map(([t]) => t);
+    if (!hot.length) return { created: 0, reason: "无重复成功工具模式" };
+    // 用 LLM 提炼 skill (name/description/content)
+    const summary = ok.slice(-20).map((t) => `工具 ${t.tool}: ${String(t.result || "").slice(0, 80)}`).join("\n");
+    let skill;
+    try {
+      const r = await this.llm.chat([
+        { role: "system", content: "你是技能提炼器。根据成功的工具调用轨迹, 提炼一个可复用技能。只输出 JSON: {\"name\":\"技能名(仅字母数字横线)\",\"description\":\"一句话说明\",\"content\":\"SKILL正文, 含 ## 流程(逐步工作流) 和 ## 验证(完成后必须提供的证据)\"}。不要解释, 只输出 JSON。" },
+        { role: "user", content: `高频工具: ${hot.join(", ")}\n成功轨迹:\n${summary.slice(0, 2000)}` },
+      ]);
+      const text = String(r.content || "").trim().replace(/```(?:json|JSON)?\s*/g, "").replace(/```/g, "").trim();
+      const m = text.match(/\{[\s\S]*\}/);
+      if (!m) return { created: 0, reason: "LLM 未产出有效 JSON" };
+      skill = JSON.parse(m[0]);
+    } catch { return { created: 0, reason: "LLM 提炼失败" }; }
+    if (!skill || !skill.content) return { created: 0, reason: "Skill 字段缺失" };
+    // name 归一化: 仅字母/数字/横线, 非法字符剔除, 空则兜底
+    const name = String(skill.name || "").replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || ("auto-" + Date.now().toString(36));
+    const res = await this.tools.call("create_skill", {
+      name,
+      description: String(skill.description || "自动提炼的技能"),
+      content: String(skill.content),
+    }, { agent: this });
+    if (res.startsWith(TOOL_ERROR_PREFIX)) return { created: 0, reason: res };
+    info(`[refineSkill] 生成技能: ${name}`);
+    return { created: 1, name };
+  }
+
 
   // 把新记忆归档进 L2 场景
   _archiveScenes() {
@@ -525,7 +644,70 @@ export class PPXAgent {
     }
   }
 
+  // 可观测: 聚合各层状态 (记忆 L0-L3 / 轨迹 / 工具 / 经验 / 自愈)
+  // 顶层展平 traces.stats() 字段 (count/failed/failRate/slowTools), 向后兼容 web 前端
+  stats() {
+    const sessions = this.sessionStore ? this.sessionStore.list() : [];
+    const eventsTotal = sessions.reduce((a, s) => a + (s.count || 0), 0);
+    const tools = this.tools ? this.tools.listDetailed() : [];
+    return {
+      ...(this.traces && typeof this.traces.stats === "function" ? this.traces.stats() : {}),
+      agent: {
+        name: this.config.agent?.name || "ppx",
+        mode: this.config.agent?.mode || "react",
+        llm: this.llm ? (this.llm.backend || this.llm.model || "configured") : "none",
+      },
+      memory: {
+        l0: { events_total: eventsTotal, sessions: sessions.length },
+        l1: this.facts && this.facts.stats ? this.facts.stats() : {},
+        l2: this.scenes && this.scenes.count ? { scenes: this.scenes.count() } : {},
+        l3: this.personaStore && this.personaStore.stats ? this.personaStore.stats() : {},
+        ...(this.memory && this.memory.stats ? this.memory.stats() : {}),
+      },
+      tools: { total: tools.length, enabled: tools.filter((t) => t.enabled).length },
+      experience: this.experience ? { lessons: this.experience.lessons.length } : {},
+      health: this.health || null,
+    };
+  }
+
+  // 接入 MCP 服务器: 连接 + 注册工具到 catalog (可选能力, 显式调用)
+  // servers 缺省用 config.mcp.servers; 返回注册的工具数
+  async connectMcp(servers = null) {
+    const list = servers || (this.config.mcp && this.config.mcp.servers) || [];
+    if (!list.length) return 0;
+    const r = await registerMcpTools(this.tools, list);
+    this._mcp = r;
+    return r.count;
+  }
+
+  // 热重载提供方: 从 config/ppx.json 重建 LLM 客户端列表
+  // 用法: HTTP API 增删改提供方后调用, 立即生效无需重启
+  reloadProviders() {
+    this.config = this._loadConfig(null);
+    this.llm = this._resolveSingleLLM(this.config);
+    this.allProviders = this._resolveAllLLMs(this.config);
+    info(`[providers] 热重载完成: ${this.allProviders.length} 个客户端`);
+    return { llm: this.llm ? (this.llm.backend || this.llm.model) : null, count: this.allProviders.length };
+  }
+
+  // 与 plugin/builtin.js 的同名纯函数保持一致; 这里复制一份避免循环依赖 (agent 已被 plugin 依赖)
+  _isUsableProvider(prov) {
+    const key = prov.api_key || process.env[prov.api_key_env];
+    const isLocal = /127\.0\.0\.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
+    const isOpenclaw = prov.backend === "openclaw" || prov.id === "openclaw";
+    const isDeepseek = prov.backend === "deepseek" || prov.backend === "dsh" || prov.id === "dsh";
+    return !!(key || isLocal || isOpenclaw || isDeepseek);
+  }
+  _resolveSingleLLM(config) {
+    const p = (config.providers || []).find((x) => this._isUsableProvider(x));
+    return p ? new LLMClient(p) : null;
+  }
+  _resolveAllLLMs(config) {
+    return (config.providers || []).filter((x) => this._isUsableProvider(x)).map((p) => new LLMClient(p));
+  }
+
   shutdown() {
+    this._mcp?.close?.();
     this.memory._saveState?.();
     this.healer.markClean();
   }

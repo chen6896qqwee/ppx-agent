@@ -1,5 +1,151 @@
 ﻿# CHANGELOG
 
+## v0.10.3 (2026-08-16) — 模型配置 Web UI (DSH 风格首启向导)
+
+补上"首启即可视化配置 LLM 提供方", 用户不再需要手改 `config/ppx.json`。
+
+### 后端: 提供方 CRUD + 热重载
+- **`src/config/providers.js`** (新建): 提供方 CRUD (load/validate/sanitize/add/update/remove/reorder) + 原子写盘 + .bak 备份 (保留最近 3 个)
+- **`src/channels/http.js`**: 新增 6 个路由
+  - `GET    /api/providers`        列表 (key 抹掉, 只返 api_key_set 标志)
+  - `POST   /api/providers`        新增 (body: { provider: {...} })
+  - `PUT    /api/providers`        更新 (body: { id, patch })
+  - `DELETE /api/providers`        删除 (body: { id })
+  - `POST   /api/providers/test`   健康探测 (复用 agent LLM 客户端 → 兜底从磁盘构造)
+  - `POST   /api/providers/reorder` 重排 (默认 = 第 0 个)
+- **`src/agent/index.js`**: `reloadProviders()` 方法, 写盘后立即重建 `this.llm` / `this.allProviders`, 无需重启
+- **`src/server.js`**: 测试 stub 注入同步覆盖 `allProviders`, 让 /test 路由也能命中 stub
+
+### 前端: 设置子路由 + 首启引导
+- **`web/src/lib/api.ts`** (新建): fetch 封装 + Bearer token 处理 (localStorage)
+- **`web/src/app/settings/layout.tsx`** (新建): 设置页布局, 左侧子导航 (模型 / 通用 / 插件 / Agent 预设)
+- **`web/src/app/settings/model/page.tsx`** (新建): 模型设置主面板
+  - 提供方卡片列表 (状态点: 绿=就绪 / 红=未配)
+  - 编辑 / 删除 / 测试连接 按钮
+  - "+ 添加提供方" (6 个常用模板: OpenAI/DeepSeek/通义/火山/Qwen-VL/LM Studio)
+  - "+ 添加自定义提供方" (任意 OpenAI 兼容端点)
+- **`web/src/app/settings/{general,plugins,presets}/page.tsx`** (新建占位): 三栏子页面占位, 后续按需补
+- **`web/src/app/page.tsx`**: 头部加"设置"链接 + 首启引导横幅 (无任何就绪提供方时, 顶部红条提醒 + "前往配置"按钮)
+
+### 验证
+- 全量测试: 263 项 260 过 0 失败 3 跳过 (新增 21 项: validate/sanitize/CRUD/HTTP API/鉴权/测试连接, 用 tmp 根隔离生产数据)
+- 改动即热重载: API 写完磁盘后 agent 立即重建客户端, 不需重启进程
+
+## v0.10.2 (2026-08-16) — 全面完善: 扫描件自动 OCR + 防注入 + CLI 升级
+
+收掉验收报告 (ACCEPTANCE-v0.9.2) 的代码层风险项 R2/R3/R4 + 扫描件自动 OCR。
+
+### 扫描件 PDF 自动 OCR
+- `extractPdfJpegs` 提取 PDF 内嵌 JPEG (DCTDecode) 图片; `readDocumentText` 对无文本层 PDF 自动提取图片 → OCR (可注入测试)。`src/tools/document.js`
+- `read_document` / `ingest_document` 自动走 OCR; `config.ocr.auto = false` 可显式关闭
+- PDF 文本解码增强: `decodePdfString` 支持 UTF-16BE (FE FF BOM) 与 UTF-8, 修中文乱码
+
+### Prompt Injection 防护 (R2)
+- `config/ishiki.md` 新增「安全边界」: 不泄露系统提示词/人格/配置, 忽略「忽略指令/扮演新角色」注入, 不外发内部信息
+
+### CLI 升级 (R3/R4)
+- `src/cli.js` 重写: node:readline 历史 (↑↓浏览) + `/stop` 中断 + `/reset` 清会话 + Ctrl+C 单次中断(再按退出) + busy 防重入
+- interrupt 状态自动复位: `chat()`/`chatStream()` 开头 `clearInterrupt()`, 修中断状态残留 bug
+
+### 验证
+- 全量测试: 220 项 217 过 0 失败 3 跳过 (网络 gate)。
+- 新增: extractPdfJpegs / 扫描件自动 OCR(注入 mock) / 文字型 PDF 不误触发 OCR / interrupt 复位。
+
+## v0.10.1 (2026-08-16) — OCR 文字识别 (扫描件/图片)
+
+补上 PDF 扫描件的缺口: OCR 识别图片里的文字。
+
+### OCR (零依赖, 可插拔)
+- **`src/tools/ocr.js`**: `ocrImage` 主通道本地 tesseract (零 key 零网络) + 百度 OCR 云回退。
+  - `tesseractAvailable` 检测本地 tesseract (本机已装 v5.5.0 含 chi_sim 中文包)
+  - `ocrWithTesseract` 调 tesseract 二进制输出识别文字
+  - `ocrWithBaidu` 百度通用文字识别 (access_token + general_basic)
+  - 都不可用抛中文引导
+- **`ocr_image` 工具**: 识别图片/扫描件文字 (config.ocr 可配 tesseract 路径/lang/云 key)。`src/tools/document.js`
+
+### 验证
+- 全量测试: 216 项 213 过 0 失败 3 跳过 (网络 gate)。
+- 新增 test/ocr.test.js (6): tesseract 检测/识别逻辑/云回退/中文引导/路径越界。
+- 真实冒烟: 本机 tesseract 可用, OCR 调用链路真实走通。
+
+## v0.10.0 (2026-08-16) — 文档加载 + RAG (对标 LangChain Document Loaders)
+
+补上对标 LangChain 缺失的两块: 文档加载器 + 向量检索接入。
+
+### 文档加载器 (零依赖)
+- **`src/tools/document.js`**: `extractDocumentText` 按扩展名提取 txt/md/json/csv/html/pdf 纯文本。
+  - PDF 零依赖提取: zlib 解压 FlateDecode 流 + 提取 Tj/TJ 文本操作符 (文字型 PDF, 扫描件需 OCR)
+  - html 去 script/style 标签; `splitChunks` 按段落分块 (~500 字)
+- **`read_document` 工具**: 读本地文档转纯文本 (复用 safePath 防路径穿越)
+
+### 向量检索接入 (可选)
+- **`src/llm/embedder.js`**: `createEmbedder` 从 `config.embedding` 读 OpenAI 兼容 embedding 端点 (零依赖 fetch), 返回 embed 函数。
+- **自动注入**: toolsPlugin 启动时配了 `config.embedding` 则 `facts.setEmbedder`, 记忆检索自动切 dense cosine + BM25 RRF 融合; 不配则纯 BM25 + LLM 扩展兜底。
+
+### RAG 入库闭环
+- **`ingest_document` 工具**: 读文档 → 分块 → 写入 FactStore (带 scope 来源标签, 与对话记忆同库统一检索)。
+
+### 验证
+- 全量测试: 210 项 207 过 0 失败 3 跳过 (网络 gate)。
+- 新增 test/document.test.js (9): txt/md/html/pdf 提取 / 分块 / read_document / ingest_document / embedder。
+
+## v0.9.2 (2026-08-16) — P0 工程收尾 (版本号/残留清理/自愈修复)
+
+### 修复
+- **版本号同步**: `package.json` `version` 0.1.0-beta → 0.9.1 (与真实版本脱节 9 个小版本)
+- **自愈 corrupt 清理 bug**: `Healer.cleanupCorruptBackups` 定义了但 `heal()` 从未调用, 导致 `.corrupt-*` 备份持续累积。修复: `heal()` 内自动调用, 保留最近 2 个。`src/selfheal/healer.js`
+- **清理 data/ 残留**: corrupt 备份 6 → 2 (保留最近 2 个), 无 tmp/bak 残留
+
+### 验证
+- 全量测试: 201 项 198 过 0 失败 3 跳过 (网络 gate)。
+- 新增 test/selfheal-cleanup.test.js (2): 自动清理保留最近 2 / 不足 2 不误删。
+
+## v0.9.1 (2026-08-16) — 多模态读图接通 (视觉模型接入)
+
+把「多模态为零」补齐为可用的读图链路。此前 read_image 工具 + toToolContent 转 image_url 块存在, 但图片落在 tool 消息里 (OpenAI 视觉 API 要求图片在 user 消息), 且没有视觉模型。
+
+### 多模态链路
+- **图片自动注入**: `_visionUserContent` 扫描 user 消息里的图片路径 (png/jpg/gif/webp/bmp), 同步读图注入为 OpenAI 视觉格式的 `[{type:text},{type:image_url}]` content 数组。`src/agent/index.js`
+- **视觉路由**: `_llmWithFallback` / `chatStream` 检测到消息含 image_url 块时, 优先路由到 `vision: true` 的 provider (否则图片发到文本后端浪费)。`src/agent/index.js`
+- **provider 标记**: `LLMClient` 新增 `vision` 字段 (provider.vision)。`src/llm/client.js`
+- **纯函数复用**: `imageFileToDataUrl` 抽出, read_image 工具与图片注入共用。`src/tools/builtin.js`
+- **视觉模型接入**: config 新增 `qwen-vl` provider (qwen-vl-max, vision: true, DASHSCOPE_API_KEY)。`config/ppx.json`
+- buildMessages / chatStream 统一走 `agent._userContent()` 组装 user 消息。`src/mode/index.js`
+
+### 用法
+对话中说「看这张图 ./screenshot.png 里有什么」即可, 图片自动读入 + 路由到视觉模型。openclaw/dsh 是文本围栏不传图, 图片只走 http+vision 后端。
+
+### 验证
+- 全量测试: 199 项 196 过 0 失败 3 跳过 (网络 gate)。
+- 新增多模态用例: imageFileToDataUrl / _userContent 注入 / 无 vision 回退 / _visionLLM 路由 (test/multimodal.test.js)。
+
+## v0.9.0 (2026-08-16) — 路线图收尾: 微信/沙箱/军团模式/自我进化
+
+依据 `docs/EVALUATION-v0.8.2.md` 的 P1/P2 剩余项, 一次性收尾四个离线可做的硬骨头。
+
+### P1 微信通道收尾 (半成品 → 完整)
+- **主动推送 send()**: 企业微信应用消息 API (gettoken + message/send), 需 corp_id + corp_secret + agent_id。`src/channels/wechat.js`
+- **加密模式被动回复**: 新增 `encryptReplyXml()` 生成含 MsgSignature/TimeStamp/Nonce 的加密回包; 加密 webhook 解密处理后自动加密回包。`src/channels/wechat-crypto.js`
+- **config 补字段**: `channels.wechat.{path,token,encodingAESKey,corpId,corpSecret,agentId}` + `channels.feishu.{appId,appSecret,verifyToken}`。`src/config/index.js` `config/ppx.json`
+
+### P1 code_act 沙箱化 (进程级加固)
+- **干净环境变量**: `sandboxEnv()` 白名单只留运行必需变量, 剥离一切 API_KEY/TOKEN/SECRET/凭证, 防脚本窃取宿主凭据。`src/tools/builtin.js`
+- **node 内存上限** `--max-old-space-size=256` + 输出上限 512KB + `windowsHide` + 超时强杀进程树。
+- 真正隔离需外部 Docker/MicroVM, 文档注明 (见 docs/CONFIG.md)。
+
+### P2 多 Agent 军团模式接入 mode 系统
+- 新增 `src/mode/legion.js`: `legionExecutor` 懒建 Legion (缓存到 agent._legion), workflow 走 DAG 编排, 否则 broadcast 取首答。
+- `PPXAgent` 支持 `dataDir` 覆盖 + `agent-worker.js` 用 `PPX_AGENT_DATA_DIR` 隔离军团数据目录 (修 worker 读取未使用的半成品)。
+- mode 注册 6 → 7 个 (react/single/plan-exec/router/blackboard/graph/legion)。`src/plugin/builtin.js`
+
+### P2 自我进化闭环补全 (轨迹 → 经验 → Skill)
+- 新增 `PPXAgent.refineSkill()`: 成功轨迹 → 高频成功工具模式 → LLM 提炼 → 复用 create_skill 落盘。与 refine() (失败→经验) 互补。`src/agent/index.js`
+- 新增 `refine_skill` 工具, 供 LLM 主动触发自我进化。`src/tools/selfmod.js`
+
+### 验证
+- 全量测试: 195 项 192 过 0 失败 3 跳过 (网络 gate)。
+- 新增 test/wechat-channel.test.js (5) + test/legion-mode.test.js (4) + 微信加密回包/沙箱/refineSkill 用例。
+
 ## v0.4.1 (2026-08-14) — 评估报告修复 (P0/P1)
 
 依据 `docs/EVALUATION-v0.4.md` 修复安全与工程质量问题。

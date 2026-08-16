@@ -6,6 +6,8 @@
 // 直到引擎输出无围栏的最终回复。
 // 纯函数, 无 I/O, 便于单测。
 
+import { parseDsml } from "./dsml.js";
+
 // 围栏正则: ⟪tool:名字|{json}⟫  (参数用 JSON; 名字限标识符)
 const FENCE_RE = /⟪tool:([A-Za-z_][\w]*)│([\s\S]*?)⟫/g;
 
@@ -29,6 +31,21 @@ export function parseToolFence(text) {
   }
   if (calls.length) clean = text.replace(FENCE_RE, "").replace(/\n{3,}/g, "\n\n").trim();
   return { calls, clean };
+}
+
+// 统一工具调用解析: 先试自定义围栏 ⟪tool⟫, 再试 DSML (DeepSeek V4 Flash 官方格式)。
+// 让围栏代理能同时驱动"围栏模型"与"DSML 文本模型"(如本地 DeepSeek V4 Flash)。
+export function parseToolCalls(text) {
+  const fence = parseToolFence(text);
+  if (fence.calls.length) return fence;
+  const dsml = parseDsml(text);
+  const calls = dsml.calls.map((c, i) => ({
+    id: "dsml_" + i + "_" + Math.random().toString(36).slice(2, 6),
+    type: "function",
+    function: { name: c.name, arguments: JSON.stringify(c.args || {}) },
+    _args: c.args || {},
+  }));
+  return { calls, clean: dsml.clean, thinking: dsml.thinking };
 }
 
 // 把工具清单 + 围栏说明拼成注入文本 (传给外部引擎的 system/user)
@@ -60,19 +77,20 @@ export async function proxyToolLoop(engineReply, toolRunner, { maxRounds = 8 } =
   for (let round = 0; round < maxRounds; round++) {
     const text = await engineReply(context);
     finalText = text;
-    const { calls, clean } = parseToolFence(text);
-    if (!calls.length) return clean || text; // 无围栏 = 最终回复
-    // 有围栏: 执行每个工具, 拼结果回上下文
+    const { calls, clean } = parseToolCalls(text);
+    if (!calls.length) return clean || text; // 无围栏/无 DSML = 最终回复
+    // 有工具调用: 执行每个工具, 拼结果回上下文
     let results = [];
     for (const c of calls) {
       let res;
       try { res = await toolRunner(c.function.name, c._args); }
       catch (e) { res = `[皮皮虾] 工具${c.function.name}执行失败: ${e.message}`; }
-      results.push(`⟪工具 ${c.function.name} 结果⟫\n` + String(res));
+      results.push(`<tool_result>${c.function.name}\n` + String(res) + `</tool_result>`);
     }
     context = (context ? context + "\n\n" : "") + results.join("\n\n");
     // 提示引擎基于结果继续
-    context += "\n\n[请基于上述工具结果继续。若任务完成, 直接输出最终回复, 不要围栏。]";
+    context += "\n\n[请基于上述工具结果继续。若任务完成, 直接输出最终回复, 不要工具调用。]";
   }
-  return finalText && !parseToolFence(finalText).calls.length ? parseToolFence(finalText).clean : "[皮皮虾] 工具代理轮次过多, 已停止。";
+  const last = parseToolCalls(finalText);
+  return last.calls.length ? "[皮皮虾] 工具代理轮次过多, 已停止。" : (last.clean || finalText);
 }

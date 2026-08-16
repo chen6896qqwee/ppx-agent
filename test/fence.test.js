@@ -1,6 +1,13 @@
 ﻿import test from "node:test";
 import assert from "node:assert";
 import { parseToolFence, buildFencePrompt, proxyToolLoop } from "../src/llm/fence.js";
+import { LLMClient } from "../src/llm/client.js";
+
+test("supportsNativeToolCalls: http 后端 true, openclaw/dsh 围栏后端 false", () => {
+  assert.equal(new LLMClient({ id: "x", base_url: "http://127.0.0.1:1/v1", api_key: "k" }).supportsNativeToolCalls, true);
+  assert.equal(new LLMClient({ id: "openclaw", backend: "openclaw" }).supportsNativeToolCalls, false);
+  assert.equal(new LLMClient({ id: "dsh", backend: "deepseek" }).supportsNativeToolCalls, false);
+});
 
 test("解析单个围栏 + 剥离文本", () => {
   const { calls, clean } = parseToolFence("我来读文件 ⟪tool:read_file│{\"path\":\"/tmp/a.txt\"}⟫ 完成");

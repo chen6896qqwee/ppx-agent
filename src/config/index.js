@@ -1,0 +1,193 @@
+// src/config/index.js - 统一配置中心
+// 职责: 加载 config/ppx.json|yaml → 深度合并默认值 → 环境变量覆盖 → 校验
+// 目标: 让用户"自由定制"有统一入口, 配置错误有友好提示 (不再静默失败)
+// 用法: import { loadConfig, validateConfig, DEFAULT_CONFIG } from "./config/index.js"
+import fs from "node:fs";
+import path from "node:path";
+import { readJson, readText } from "../utils/store.js";
+import { warn } from "../utils/logger.js";
+
+// ---- 默认配置 (用户未写的字段用这些兜底) ----
+// 所有可配置项集中在这里, 用户看这一处就知道能定制什么
+export const DEFAULT_CONFIG = {
+  agent: {
+    name: "皮皮虾",
+    yuan: "ppx",
+    localIntent: true,
+    mode: "react",
+    citation_rule: "[CITATION] When you state facts from web_search/http_request, cite the source URL right after the claim. Never fabricate sources; if unsure of origin, say you are not sure.",
+    system_extra: "",
+  },
+  user: { name: "兄弟" },
+  providers: [],
+  memory: {
+    enabled: true,
+    token_budget: 2500,
+    decay_per_day: 0.02,
+    hit_bonus: 5,
+    base_importance: 10,
+    compile_threshold: 4.5,
+    forget_speed: 1,
+    max_history_items: 40,          // 会话历史条数上限 (信息量感知裁剪)
+    history_token_budget: 4000,     // 会话历史 token 预算
+    max_facts: 1000,                // L1 原子记忆总量上限 (防膨胀, 超限裁剪最弱)
+  },
+  experience: { enabled: true },
+  selfheal: { enabled: true, check_interval_ms: 60000, max_restart_attempts: 3 },
+  tools: { enabled: true, custom_dir: "custom-tools" },
+  plugins: { dir: "plugins" },
+  mcp: { servers: [], auto_connect: false },
+  channels: {
+    http: { enabled: true, port: 8899, auth_token: "" },
+    feishu: { enabled: false, appId: "", appSecret: "", verifyToken: "" },
+    wechat: { enabled: false, path: "/wechat/webhook", token: "", encodingAESKey: "", corpId: "", corpSecret: "", agentId: "" },
+  },
+  security: { allow_all: false, command_timeout_ms: 30000, code_act: false },
+};
+
+// 深度合并: override 优先, base 缺字段用默认值 (数组/标量直接覆盖)
+function deepMerge(base, override) {
+  const out = Array.isArray(base) ? [...base] : { ...base };
+  for (const key of Object.keys(override || {})) {
+    const bv = out[key];
+    const ov = override[key];
+    if (ov && typeof ov === "object" && !Array.isArray(ov) && bv && typeof bv === "object" && !Array.isArray(bv)) {
+      out[key] = deepMerge(bv, ov);
+    } else {
+      out[key] = ov;
+    }
+  }
+  return out;
+}
+
+// ---- YAML 解析 (从 agent/index.js 迁移, 支持子集: 键值/嵌套/数组项) ----
+function parseYaml(file) {
+  const text = readText(file);
+  const lines = text.split("\n").map((raw) => {
+    const line = raw.replace(/\s*#.*$/, "").trimEnd();
+    return { indent: line.search(/\S|$/), text: line.trim() };
+  }).filter((l) => l.text && !l.text.startsWith("#"));
+
+  const root = {};
+  const stack = []; // { indent, obj, key }
+  let arrIndent = -1;
+
+  for (const { indent, text } of lines) {
+    const arrM = text.match(/^-\s+/);
+    if (arrM) {
+      const itemText = text.slice(arrM[0].length);
+      while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+      const parent = stack.length ? stack[stack.length - 1].obj : root;
+      const arrKey = stack.length ? stack[stack.length - 1].arrKey : null;
+      if (!arrKey) continue;
+      if (!Array.isArray(parent[arrKey])) parent[arrKey] = [];
+      const kv = itemText.match(/^([\w-]+):\s*(.*)$/);
+      const item = {};
+      if (kv) {
+        item[kv[1]] = parseScalar(kv[2]);
+        parent[arrKey].push(item);
+        stack.push({ indent, obj: item, arrKey: null });
+      } else {
+        parent[arrKey].push(parseScalar(itemText));
+      }
+      continue;
+    }
+
+    const m = text.match(/^([\w-]+):\s*(.*)$/);
+    if (!m) continue;
+    const [, key, val] = m;
+    const v = val.trim();
+    while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+    const parent = stack.length ? stack[stack.length - 1].obj : root;
+    if (v === "") {
+      parent[key] = {};
+      stack.push({ indent, obj: parent[key], arrKey: null });
+    } else {
+      parent[key] = parseScalar(v);
+      stack.push({ indent, obj: parent[key] ?? {}, arrKey: key });
+      if (typeof parent[key] !== "object") stack[stack.length - 1].arrKey = null;
+    }
+  }
+  return root;
+
+  function parseScalar(v) {
+    if (v === "") return "";
+    if (/^[\[{]/.test(v)) { try { return JSON.parse(v.replace(/'/g, '"')); } catch {} }
+    if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+    if (v === "true") return true;
+    if (v === "false") return false;
+    if (v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1);
+    return v;
+  }
+}
+
+// ---- 环境变量覆盖: PPX_ 前缀 ----
+// PPX_AUTH_TOKEN -> channels.http.auth_token | PPX_PORT -> channels.http.port
+function applyEnvOverrides(config) {
+  const t = process.env.PPX_AUTH_TOKEN;
+  if (t) config.channels.http.auth_token = t;
+  const p = Number(process.env.PPX_PORT);
+  if (p) config.channels.http.port = p;
+  return config;
+}
+
+// ---- 校验: 类型检查, 收集 warnings (不抛错, 只警告, 兼容旧行为) ----
+const TYPE_CHECKS = [
+  { key: "providers", type: "array" },
+  { key: "memory", type: "object" },
+  { key: "tools", type: "object" },
+  { key: "channels", type: "object" },
+  { key: "channels.http.port", type: "number" },
+  { key: "security", type: "object" },
+  { key: "mcp", type: "object" },
+];
+
+function getPath(obj, dotted) {
+  return dotted.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+
+export function validateConfig(config) {
+  const warnings = [];
+  for (const { key, type } of TYPE_CHECKS) {
+    const v = getPath(config, key);
+    if (v === undefined) { warnings.push(`配置缺少 ${key} (已用默认值)`); continue; }
+    const ok = type === "array" ? Array.isArray(v) : typeof v === type;
+    if (!ok) warnings.push(`配置 ${key} 类型应为 ${type}, 实际 ${Array.isArray(v) ? "array" : typeof v}`);
+  }
+  if (Array.isArray(config.providers)) {
+    config.providers.forEach((p, i) => {
+      if (!p || typeof p !== "object") { warnings.push(`providers[${i}] 不是对象`); return; }
+      if (!p.id && !p.backend) warnings.push(`providers[${i}] 缺少 id`);
+      if (p.backend === "http" && !p.base_url) warnings.push(`providers[${i}] (http 后端) 缺少 base_url`);
+    });
+  }
+  if (Array.isArray(config.mcp?.servers)) {
+    config.mcp.servers.forEach((s, i) => {
+      if (!s || typeof s !== "object") { warnings.push(`mcp.servers[${i}] 不是对象`); return; }
+      if (!s.command && !s.url) warnings.push(`mcp.servers[${i}] 缺 command(stdio) 或 url(http)`);
+    });
+  }
+  return warnings;
+}
+
+// ---- 主入口: 加载 + 合并 + 环境变量覆盖 ----
+export function loadConfig(root, configFile = null) {
+  const candidates = [
+    configFile,
+    path.join(root, "config", "ppx.json"),
+    path.join(root, "config", "ppx.yaml"),
+  ].filter(Boolean);
+
+  let raw = {};
+  for (const c of candidates) {
+    if (!fs.existsSync(c)) continue;
+    if (c.endsWith(".json")) { raw = readJson(c, {}); break; }
+    if (c.endsWith(".yaml") || c.endsWith(".yml")) { raw = parseYaml(c); break; }
+  }
+
+  const config = deepMerge(DEFAULT_CONFIG, raw);
+  applyEnvOverrides(config);
+  const warnings = validateConfig(config);
+  for (const w of warnings) warn(`[config] ${w}`);
+  return config;
+}

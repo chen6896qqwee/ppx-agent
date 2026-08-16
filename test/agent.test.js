@@ -54,3 +54,12 @@ test("离线聊天 (无 LLM)", async () => {
   assert.ok(reply.length > 0);
   agent.shutdown();
 });
+
+test("interrupt 后新一轮 chat 自动复位中断状态", async () => {
+  const agent = new PPXAgent({ root: tmpRoot("agent") });
+  agent.interrupt();
+  assert.equal(agent._interrupted, true);
+  await agent.chat("你好"); // chat 开始应 clearInterrupt
+  assert.equal(agent._interrupted, false, "新一轮对话应复位中断状态");
+  agent.shutdown();
+});

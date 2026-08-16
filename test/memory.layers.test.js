@@ -79,3 +79,35 @@ test("滚动压缩: 今日事件超量后归档到 longterm", async () => {
   assert.ok(/thin|llm-summary|archived/.test(longterm), "longterm 应含压缩标记: " + longterm.slice(-80));
   a.shutdown();
 });
+
+test("L3: 启动自动生成画像 + _l3Context 注入", () => {
+  const a = new PPXAgent({ root: tmpRoot("l3-auto") });
+  const userFile = path.join(a.dataDir, "memory", "l3", "user.persona.md");
+  const agentFile = path.join(a.dataDir, "memory", "l3", "agent.persona.md");
+  assert.ok(fs.existsSync(userFile), "user.persona.md 应启动即生成");
+  assert.ok(fs.existsSync(agentFile), "agent.persona.md 应启动即生成");
+  const ctx = a._l3Context();
+  assert.ok(ctx.includes("画像"), "_l3Context 应注入画像内容");
+  a.shutdown();
+});
+
+test("L3: buildUserPersona 按 source 过滤 (对话事实可提炼, 修复 type 过滤空 bug)", () => {
+  const a = new PPXAgent({ root: tmpRoot("l3-src") });
+  // 真实路径: addMemory 用 source="conversation" (type 恒为 general)
+  a.facts.addMemory("兄弟喜欢做A股量化交易");
+  a.facts.add("公司制度第3条", { source: "document", dedupe: false });
+  const persona = a.personaStore.buildUserPersona(a.facts.list(), { force: true });
+  assert.ok(persona.includes("A股量化"), "对话事实应进入画像记忆概要");
+  assert.ok(!persona.includes("公司制度"), "document 来源不应混入用户画像");
+  a.shutdown();
+});
+
+test("L3: 同一天不重复刷新画像", () => {
+  const a = new PPXAgent({ root: tmpRoot("l3-once") });
+  const userFile = path.join(a.dataDir, "memory", "l3", "user.persona.md");
+  const before = fs.statSync(userFile).mtimeMs;
+  a._maybeRefreshPersona(); // 同一天, 应跳过
+  const after = fs.statSync(userFile).mtimeMs;
+  assert.equal(before, after, "同一天不应重复写文件");
+  a.shutdown();
+});

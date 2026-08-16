@@ -130,10 +130,10 @@ ${lines.join("\n")}\n`);
     writeText(this.longtermMd, longterm);
   }
 
-  context() {
+  context(userMsg) {
     const today = _renderLines(this.sessionStore, logicalDay()).join("\n");
     const longterm = (readText(this.longtermMd) || "").slice(-3000);
-    const topFacts = this.factsTop();
+    const topFacts = this.factsTop(userMsg);
     return `
 # 今日记忆
 ${today || "(今日暂无对话)"}
@@ -146,10 +146,33 @@ ${topFacts || "(暂无)"}
 `;
   }
 
-  factsTop() {
+  // 关键事实: 按当前问题语义检索优先, 不足 8 条用衰减分补齐 (去重)。
+  // 让每轮自动注入的记忆与当前问题相关, 而非纯衰减取 top (v0.8.1 语义注入)
+  factsTop(userMsg) {
     try {
-      return this.factStore.query("", { limit: 8 }).map((f) => `- [${f.score}] ${f.content}`).join("\n");
+      const q = String(userMsg || "").trim();
+      const semantic = q ? this.factStore.query(q, { limit: 8 }) : [];
+      const decay = this.factStore.query("", { limit: 8 });
+      const seen = new Set();
+      const merged = [];
+      for (const f of [...semantic, ...decay]) {
+        if (seen.has(f.id)) continue;
+        seen.add(f.id);
+        merged.push(f);
+        if (merged.length >= 8) break;
+      }
+      return merged.map((f) => `- [${f.score}] ${f.content}`).join("\n");
     } catch { return ""; }
+  }
+
+  // 可观测: longterm 大小 + 今日事件数, 供 agent.stats() 聚合
+  stats() {
+    let longtermBytes = 0;
+    try { longtermBytes = fs.statSync(this.longtermMd).size; } catch {}
+    return {
+      longterm_bytes: longtermBytes,
+      events_today: _renderLines(this.sessionStore, logicalDay()).length,
+    };
   }
 }
 // P1#9: 记忆信号预筛 - 命中关键词或长度信号才触发 LLM 提炼 (省成本)
@@ -160,6 +183,7 @@ function _hasSignal(user, assistant) {
   if (text.length < 8) return false;
   const SIGNAL = /(我是|我喜欢|我讨厌|我记得|请记住|记住|偏好|习惯|目标是|我需要|我要|想买|喜欢|不喜欢|重要|关键|待办|计划|打算|希望|擅长|不擅长|生日|地址|电话|邮箱|账号|密码|股票|基金|仓位|止损|止盈|策略|工作|项目|公司|同事|老板|朋友|家人|对象|结婚|买房|买车|考试|学习)/;
   const isGreeting = /^(你好|在吗|谢谢|好的|嗯|ok|hi|hello|再见|拜拜|哈喽)[!。？?]*$/i.test(u.trim());
-  return !isGreeting && (SIGNAL.test(text) || text.length > 40);
+  // 收紧: 无信号关键词时, 仅对真正信息密集的长对话触发 LLM 提炼, 避免普通闲聊累积成本 [复审 P1#9]
+  return !isGreeting && (SIGNAL.test(text) || text.length > 200);
 }
 

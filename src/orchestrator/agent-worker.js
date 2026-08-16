@@ -3,8 +3,8 @@
 import { PPXAgent } from "../agent/index.js";
 
 const root = process.cwd();
-const dataDir = process.env.PPX_AGENT_DATA_DIR; // 可选: 独立数据目录
-const agent = new PPXAgent({ root });
+// 可选: 独立数据目录 (多进程军团隔离, 避免互踩同一个 data/)
+const agent = new PPXAgent({ root, dataDir: process.env.PPX_AGENT_DATA_DIR || undefined });
 
 // 从 stdin 读 JSON 行
 process.stdin.setEncoding("utf8");

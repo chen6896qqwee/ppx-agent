@@ -101,7 +101,9 @@ walk(this.dataDir);
   heal() {
     const fixes = this.runStartupChecks();
     const crash = this.checkCrash();
-    const report = { fixes, crashed: crash.crashed, crashDetail: crash.detail };
+    // 清理历史 corrupt 备份 (保留最近 2 个, 更早自动删除) — 之前漏调用导致 corrupt 持续累积
+    const cleanedCorrupt = this.cleanupCorruptBackups(2);
+    const report = { fixes, crashed: crash.crashed, crashDetail: crash.detail, cleanedCorrupt };
     if (fixes.length) info(`selfheal: 修复 ${fixes.length} 项: ${fixes.join("; ")}`);
     else info("selfheal: 无异常");
     if (crash.crashed) warn(`selfheal: 检测到崩溃残留 -> ${crash.detail}`);

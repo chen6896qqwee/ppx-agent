@@ -19,8 +19,10 @@ export class PersonaStore {
   // 从一批事实提炼用户画像
   buildUserPersona(facts, { force = false } = {}) {
     if (!force && this._exists(this.userFile)) return this._read(this.userFile);
-    // 聚焦用户相关的记忆 (来源 conversations / 主动分享)
-    const userFacts = facts.filter((f) => ["conversation", "manual", "user-shared"].includes(f.type));
+    // 聚焦用户相关的记忆 (来源: 对话 / LLM提炼 / 主动记 / 手动 / 用户分享)
+    // 注: 事实的来源标记在 source 字段 (type 恒为 general), 之前按 type 过滤永远为空 -> 修正为按 source
+    const USER_SOURCES = ["conversation", "extract", "agent-self", "manual", "user-shared"];
+    const userFacts = facts.filter((f) => USER_SOURCES.includes(f.source) || USER_SOURCES.includes(f.type));
     const interests = this._topTopics(userFacts);
     const md = `# ${this.userName} 的用户画像
 
@@ -58,6 +60,22 @@ ${lessons.slice(-10).map((l) => `- ${l.lesson}`).join("\n") || "- 暂无"}
 `;
     writeText(this.agentFile, md);
     return md;
+  }
+
+  // 读取已生成的画像 (供 agent._context 注入; 未生成返回 "")
+  userPersona() { return this._read(this.userFile); }
+  agentPersona() { return this._read(this.agentFile); }
+
+  // 可观测: L3 画像更新时间 (无文件返回 null), 供 agent.stats() 聚合
+  stats() {
+    return {
+      user_updated: this._mtime(this.userFile),
+      agent_updated: this._mtime(this.agentFile),
+    };
+  }
+
+  _mtime(f) {
+    try { return new Date(fs.statSync(f).mtime).toISOString().slice(0, 10); } catch { return null; }
   }
 
   _topTopics(facts) {

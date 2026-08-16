@@ -16,6 +16,21 @@ export function parseFrontmatter(md) {
   return meta;
 }
 
+// 解析 SKILL.md 正文章节: "## 标题" -> 内容
+// 供按需加载 (渐进式披露): agent 可只读「反合理化」「验证」等特定段, 不用整篇读入
+export function parseSections(md) {
+  const sections = {};
+  const lines = String(md || "").split(/\r?\n/);
+  let cur = null;
+  for (const line of lines) {
+    const m = line.match(/^##\s+(.+)$/);
+    if (m) { cur = m[1].trim(); sections[cur] = ""; continue; }
+    if (cur) sections[cur] += line + "\n";
+  }
+  for (const k of Object.keys(sections)) sections[k] = sections[k].trim();
+  return sections;
+}
+
 export class SkillLoader {
   constructor(skillsDir) {
     this.dir = skillsDir;
@@ -60,5 +75,13 @@ export class SkillLoader {
     const s = this.get(id);
     if (!s) return null;
     return fs.readFileSync(s.path, "utf8");
+  }
+
+  // 按需读取某个技能的指定章节 (渐进式披露: 只读「反合理化」「验证」等段, 省 token)
+  readSection(id, section) {
+    const raw = this.read(id);
+    if (raw === null) return null;
+    const sections = parseSections(raw);
+    return sections[section] ?? null;
   }
 }

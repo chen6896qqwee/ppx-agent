@@ -4,24 +4,32 @@
 
 > 架构参考 openhanako/HanaAgent 与 TencentDB-Agent-Memory，扒其记忆分层、自愈内核、工具系统的精华，用干净自包含实现重搭。
 
+> 👉 **新手上路**：5 分钟跑起来、写第一个工具/插件、替换默认模块，见 [docs/QUICKSTART.md](docs/QUICKSTART.md)。
+
 ## ✨ 特性
 
 | 能力 | 说明 |
 |------|------|
 | 🧠 **腾讯式四层记忆** | L0原始对话 → L1原子记忆(高斯衰减) → L2场景 → L3核心画像 |
-| 🔧 **11个内置工具** | 文件/命令/搜索/HTTP/定时/记忆检索 |
+| 🔧 **32个内置工具** | 文件/命令/搜索/HTTP/定时/记忆检索/读图(多模态)/文档加载/文档入库/OCR/code_act(可选)/refine(失败→经验)/refine_skill(成功→技能) |
 | 🩺 **自我修复** | 启动体检、损坏JSON自动修复、崩溃恢复、残留清理 |
-| 📚 **自我学习** | 经验库 + 自动提炼用户画像/agent人格 |
-| 🤖 **多 Agent 军团** | 多进程并行，broadcast/dispatch 分工协作 |
-| 🔌 **多渠道接入** | HTTP(可用) + 飞书/微信(框架) |
+| 📚 **自我学习** | 经验库 + 自动提炼用户画像/agent人格 + refine 失败轨迹闭环 + refineSkill 成功轨迹沉淀技能 |
+| 🤖 **多 Agent 军团** | 多进程并行 + DAG 编排 + legion 模式 (broadcast/dispatch/runDag) |
+| 🔌 **多渠道接入** | HTTP(可用) + 飞书(已实现) + 微信(加解密+主动推送+加密回包, 已实现) |
+| 🖼️ **多模态读图** | 消息含图片路径自动读图注入 image_url 块 + 视觉路由到 vision provider (qwen-vl/gpt-4o/glm-4v 等) |
+| 📄 **文档加载 + RAG** | read_document 读 txt/md/pdf/html (零依赖 PDF 提取) + ingest_document 分块入库 + 可选 embedding 向量检索 |
+| 🔍 **OCR 文字识别** | ocr_image 识别图片/扫描件文字 + 扫描件 PDF 自动 OCR (本地 tesseract 零 key, 云 OCR 回退) |
+| 🛡️ **防注入安全边界** | 不泄露系统提示词/人格, 忽略「忽略指令/扮演新角色」注入 |
+| ⌨️ **CLI 交互** | readline 历史(↑↓) + /stop 中断 + /reset 清会话 + Ctrl+C 单次中断 |
 | ✅ 上下文压缩 | 长对话自动滚动摘要, 防 token 失控 |
 | ✅ 错误自愈 | 工具错误统一语义, 自动重试修正 |
 | ✅ 方法型Skill | humanize去AI味 / write_article分阶段写作 / clarify需求澄清 |
+| 🔌 **MCP 客户端** | 零依赖 MCP 客户端 (stdio + HTTP Streamable), 接入 9600+ MCP 工具服务器 |
 | ✅ 可观测 | 工具调用轨迹JSONL + 失败率/慢工具统计 |
 | ✅ LLM真摘要 | 长对话自动LLM语义摘要, 非堆叠 |
 | ✅ 场景系统 | 灵魂文件式场景(手动设定/历史提炼), 命中自动切换行为 |
 | ✅ Next.js产品壳 | web/ 前端代理8899内核, 聊天+场景+记忆+轨迹+统计 |
-| ☁ **多轮对话历史** | 会话内上下文连续, 滚动截断控 token (P0 修复) |
+| ✅ **多轮对话历史** | 会话内上下文连续, 信息量感知裁剪控 token |
 | ✅ **流式输出** | SSE 逐字流式, Web UI 实时渲染 (P1) |
 | ✅ **命令安全** | run_command 黑白名单+高危拦截+精确匹配 (P0) |
 | ✅ **SSRF 防护** | http_request 拦截内网/保留地址 (P1) |
@@ -29,7 +37,7 @@
 | ✅ **测试隔离** | 所有测试用临时目录, 不污染生产数据 (P0) |
 | 🔐 **HTTP 认证** | Bearer Token, 未配置自动生成随机token (P0) |
 | ✅ **Markdown 渲染** | Web UI marked.js 渲染代码块/列表 (P1) |
-| ? **OpenClaw 底座** | LLM 引擎通过 `openclaw agent` CLI 驱动 OpenClaw, 官方工具/记忆/通道循环可用, 保留多 provider 回退 |
+| ✅ **OpenClaw 底座** | LLM 引擎通过 `openclaw agent` CLI 驱动 OpenClaw (另有 dsh / http 后端), 围栏协议代理工具, 保留多 provider 回退 |
 | ✅ **多模型 API 优先** | OpenAI/DeepSeek/火山/通义 + 本地模型兜底 |
 
 ## OpenClaw 底座
@@ -108,13 +116,13 @@ ppx-agent/
 │   ├── agent/      Agent 引擎 (编排 + 工具循环 + 多模型回退)
 │   ├── memory/     L0-L3 四层记忆 + 经验库
 │   ├── selfheal/   自愈引擎
-│   ├── tools/      工具系统 (24个)
+│   ├── tools/      工具系统 (32个 + MCP 动态注册)
 │   ├── channels/   通道 (http/feishu/wechat)
 │   ├── orchestrator/ 军团编排器 (多进程)
 │   ├── llm/        LLM 客户端
 │   └── utils/      基础设施
 ├── data/           运行时数据 (不进 git)
-├── test/           测试 (38 个全过)
+├── test/           测试 (199 项全过 0 失败)
 └── docs/           文档
 ```
 

@@ -83,13 +83,13 @@ export function registerSelfmodTools(catalog, { skillsDir }) {
   // 5. 创建新技能 (L5 auto-skill: 复杂任务后沉淀为可复用 Skill)
   catalog.register({
     name: "create_skill",
-    description: "把一次成功的方法/流程沉淀为可复用的 Agent Skill。name=技能名(字母数字横线), description=一句话说明, content=SKILL.md 正文(建议含步骤/示例)。写进 skills/ 目录后自动被 loader 发现。",
+    description: "把一次成功的方法/流程沉淀为可复用的 Agent Skill。name=技能名(字母数字横线), description=一句话说明, content=SKILL.md 正文。正文推荐含三个段落(参考 addyosmani/agent-skills): ①「## 流程」逐步工作流+检查点 ②「## 反合理化」常见偷懒借口+反驳 ③「## 验证」完成后必须提供的证据。写进 skills/ 目录后自动被 loader 发现。",
     parameters: {
       type: "object",
       properties: {
         name: { type: "string", description: "技能名, 仅字母/数字/横线" },
         description: { type: "string", description: "技能一句话说明" },
-        content: { type: "string", description: "SKILL.md 正文" },
+        content: { type: "string", description: "SKILL.md 正文 (建议含: 流程/反合理化/验证 三段)" },
       },
       required: ["name", "description", "content"],
     },
@@ -106,6 +106,36 @@ export function registerSelfmodTools(catalog, { skillsDir }) {
       const frontmatter = "---" + "\n" + "name: " + name + "\n" + "description: " + desc + "\n" + "---" + "\n" + "\n";
       fs.writeFileSync(path.join(dir, "SKILL.md"), frontmatter + content, "utf8");
       return "已创建技能: " + name + " (skills/" + name + "/SKILL.md)";
+    },
+  });
+
+  // 6b. 自我进化: 从失败轨迹自动提炼经验 (refine 的上半场, 补齐「失败→经验」闭环)
+  catalog.register({
+    name: "refine",
+    description: "从最近的失败工具调用轨迹自动提炼一条可复用经验教训 (自我进化闭环)。失败轨迹足够(≥2条)时, 用 LLM 提炼成一句话经验存进经验库, 后续任务自动注入上下文。",
+    parameters: { type: "object", properties: { limit: { type: "number", description: "回看轨迹条数, 默认 20" } }, required: [] },
+    category: "selfmod",
+    power: "agent",
+    execute: async (args, ctx) => {
+      const agent = ctx && ctx.agent;
+      if (!agent || typeof agent.refine !== "function") return capErr("refine", "无 agent 上下文");
+      const r = await agent.refine({ limit: Number(args && args.limit) || 20 });
+      return JSON.stringify(r);
+    },
+  });
+
+  // 7. 自我进化: 从成功轨迹自动提炼可复用 Skill (refine 的下半场)
+  catalog.register({
+    name: "refine_skill",
+    description: "从最近成功的工具调用轨迹自动提炼一个可复用 Skill (自我进化闭环)。成功轨迹足够且高频工具重复出现时, 用 LLM 提炼成 skills/<name>/SKILL.md。",
+    parameters: { type: "object", properties: { limit: { type: "number", description: "回看轨迹条数, 默认 50" } }, required: [] },
+    category: "selfmod",
+    power: "agent",
+    execute: async (args, ctx) => {
+      const agent = ctx && ctx.agent;
+      if (!agent || typeof agent.refineSkill !== "function") return capErr("refine_skill", "无 agent 上下文");
+      const r = await agent.refineSkill({ limit: Number(args && args.limit) || 50 });
+      return JSON.stringify(r);
     },
   });
 

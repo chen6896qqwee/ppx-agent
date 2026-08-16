@@ -1,13 +1,32 @@
 ﻿// src/channels/wechat.js - 微信通道适配器 (企业微信/公众号 webhook)
-// 简化版: 通过 webhook 接收文本并回复 (需配置 token)
-// 真实企业微信机器人: 需 app_id/corp_id/secret + 回调 URL
+// 已实现:
+//   - 加密消息解密 (AES-256-CBC) + 验签 (wechat-crypto.js)
+//   - 明文/加密模式被动回复 (加密模式回包 encryptReplyXml)
+//   - 主动推送 send(): 企业微信应用消息 API (corp_id + corp_secret + agent_id)
+// 凭据: 接收回调用 token + encodingAESKey; 主动推送用 corp_id + corp_secret + agent_id
+//   (config.channels.wechat 或环境变量 WECHAT_*)
 import { Channel } from "./base.js";
+import { decryptMsg, verifySignature, encryptReplyXml } from "./wechat-crypto.js";
 
 export class WechatWebhookChannel extends Channel {
-  constructor(agent, { path = "/wechat/webhook", token = "" } = {}) {
+  constructor(agent, {
+    path = "/wechat/webhook",
+    token = "",
+    encodingAESKey = "",
+    corpId = "",
+    corpSecret = "",
+    agentId = "",
+  } = {}) {
     super("wechat", agent);
     this.path = path;
     this.token = token || process.env.WECHAT_WEBHOOK_TOKEN || "";
+    this.encodingAESKey = encodingAESKey || process.env.WECHAT_ENCODING_AES_KEY || "";
+    // 主动推送凭据 (企业微信应用消息)
+    this.corpId = corpId || process.env.WECHAT_CORP_ID || "";
+    this.corpSecret = corpSecret || process.env.WECHAT_CORP_SECRET || "";
+    this.agentId = agentId || process.env.WECHAT_AGENT_ID || "";
+    this.accessToken = null;
+    this.tokenExpire = 0;
   }
 
   async connect() {
@@ -15,31 +34,100 @@ export class WechatWebhookChannel extends Channel {
     return this;
   }
 
-  // 企业微信回调: { msg_signature, timestamp, nonce, echostr, Encrypt }
-  // 简化处理: 假设明文模式 (需在企微后台配置 EncodingAESKey 解密, 此处做框架)
-  async handleWebhook(body) {
-    const data = typeof body === "string" ? JSON.parse(body) : body;
-    // 明文文本消息
-    if (data.Content) {
-      const text = data.Content;
-      const reply = await this.agent.chat(text);
-      // 企业微信被动回复 XML
-      const toUser = data.FromUserName || "";
-      const fromUser = data.ToUserName || "";
-      return {
-        xml: `<xml>
+  // 企业微信回调: URL query 带 msg_signature/timestamp/nonce; body 为 XML
+  // 加密模式: 外层 XML 含 <Encrypt>, 解密得内层明文消息
+  async handleWebhook(body, query = {}) {
+    const raw = typeof body === "string" ? body : JSON.stringify(body);
+
+    // 加密消息: 验签 + 解密 + 加密回包
+    if (/<Encrypt>/.test(raw)) {
+      const enc = (raw.match(/<Encrypt><!\[CDATA\[([\s\S]*?)\]\]><\/Encrypt>/) || [])[1] || "";
+      if (this.token && query.msg_signature && enc) {
+        const ok = verifySignature(this.token, query.timestamp || "", query.nonce || "", enc, query.msg_signature);
+        if (!ok) return { error: "签名校验失败" };
+      }
+      if (!this.encodingAESKey) return { error: "未配置 encodingAESKey, 无法解密" };
+      const { msg, receiveId } = decryptMsg(this.encodingAESKey, raw);
+      const reply = await this._replyFromXml(msg);
+      // 加密模式: 把明文回复 XML 加密成回包 (含签名/时间戳/随机数)
+      if (reply.xml) {
+        return { xml: encryptReplyXml({
+          encodingAESKey: this.encodingAESKey,
+          token: this.token,
+          replyXml: reply.xml,
+          receiveId,
+          timestamp: query.timestamp || null,
+          nonce: query.nonce || null,
+        }) };
+      }
+      return reply;
+    }
+
+    // 明文 XML 模式
+    if (/<Content>/.test(raw)) return this._replyFromXml(raw);
+
+    // URL 验证 (GET echostr, 明文模式直接回显; 加密模式需 encryptMsg, 见官方文档)
+    const echostr = (raw.match(/<echostr>([\s\S]*?)<\/echostr>/) || [])[1];
+    if (echostr) return echostr;
+
+    return { error: "未识别的微信消息" };
+  }
+
+  // 从明文 XML 提取文本并生成被动回复
+  async _replyFromXml(xml) {
+    const g = (tag) => ((String(xml).match(new RegExp(`<${tag}><!\\[CDATA\\[([\\s\\S]*?)\\]\\]></${tag}>`)) || [])[1] || "").trim();
+    const text = g("Content");
+    if (!text) return { error: "无文本内容" };
+    const reply = await this.agent.chat(text);
+    const toUser = g("FromUserName");
+    const fromUser = g("ToUserName");
+    return {
+      xml: `<xml>
   <ToUserName><![CDATA[${toUser}]]></ToUserName>
   <FromUserName><![CDATA[${fromUser}]]></FromUserName>
   <CreateTime>${Math.floor(Date.now() / 1000)}</CreateTime>
   <MsgType><![CDATA[text]]></MsgType>
   <Content><![CDATA[${reply}]]></Content>
 </xml>`,
-      };
-    }
-    // URL 验证
-    if (data.echostr) return data.echostr;
-    return { error: "未识别的微信消息" };
+    };
   }
 
-  async send(to, text) { return text; }
+  // 获取企业微信 access_token (主动推送用), 带缓存
+  async _getAccessToken() {
+    if (this.accessToken && Date.now() < this.tokenExpire) return this.accessToken;
+    if (!this.corpId || !this.corpSecret) {
+      throw new Error("微信主动推送未配置: 需 corp_id + corp_secret (config.channels.wechat 或环境变量 WECHAT_CORP_ID/WECHAT_CORP_SECRET)");
+    }
+    const r = await fetch(
+      `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(this.corpId)}&corpsecret=${encodeURIComponent(this.corpSecret)}`,
+      { signal: AbortSignal.timeout(15000) },
+    );
+    const data = await r.json();
+    if (data.errcode !== 0) throw new Error(`微信 access_token 失败: ${data.errmsg} (errcode=${data.errcode})`);
+    this.accessToken = data.access_token;
+    this.tokenExpire = Date.now() + (data.expires_in - 60) * 1000;
+    return this.accessToken;
+  }
+
+  // 主动推送 (企业微信应用消息): 需 corp_id + corp_secret + agent_id
+  async send(to, text) {
+    const token = await this._getAccessToken();
+    if (!this.agentId) {
+      throw new Error("微信主动推送未配置 agent_id (config.channels.wechat.agent_id 或环境变量 WECHAT_AGENT_ID)");
+    }
+    const r = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        touser: String(to),
+        msgtype: "text",
+        agentid: Number(this.agentId),
+        text: { content: String(text) },
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await r.json();
+    if (data.errcode !== 0) throw new Error(`微信发送失败: ${data.errmsg} (errcode=${data.errcode})`);
+    return data;
+  }
 }

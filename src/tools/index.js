@@ -5,3 +5,5 @@ export { registerBuiltinTools } from "./builtin.js";
 export { registerAdvancedTools, Scheduler } from "./advanced.js";
 export { registerMethodTools } from "./methods.js";
 export { registerSelfmodTools } from "./selfmod.js";
+export { registerCustomTools } from "./custom.js";
+export { registerDocumentTools } from "./document.js";

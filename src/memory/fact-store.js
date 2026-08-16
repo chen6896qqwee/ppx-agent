@@ -13,6 +13,7 @@ export class FactStore {
       hitBonus: 5,
       baseImportance: 10,
       forgetSpeed: 1.0,
+      maxFacts: 1000,      // L1 事实总量上限, 超限按「衰减分×重要性」裁剪最弱 (0/负数=不裁剪)
       ...opts,
     };
     this.facts = readJson(this.file, []);
@@ -20,6 +21,9 @@ export class FactStore {
     this._index = new Map();
     // BM25 作用域统计缓存 (facts 内容不可变, add 时失效即可), 避免每查询 O(N) 重算
     this._statsCache = new Map();
+    // 可插拔 embedder (dense 语义检索, 默认 null = 纯 BM25); _embedCache 内存缓存不落盘
+    this.embedder = null;
+    this._embedCache = new Map();
     for (const fact of this.facts) this._indexFact(fact);
     this.save();
   }
@@ -75,8 +79,32 @@ export class FactStore {
     this.facts.push(fact);
     this._indexFact(fact);
     this._statsCache.clear(); // 新增事实 -> 作用域统计失效
-    this.save();
+    // 总量裁剪: 超 maxFacts 时删除最弱事实 (防记忆膨胀); 未裁剪时正常落盘
+    const pruned = this._prune();
+    if (!pruned) this.save();
     return fact;
+  }
+
+  // L1 总量裁剪: 超 maxFacts 时, 按「衰减后有效分 × 重要性」排序, 删除最弱事实。
+  // 补齐「衰减只在查询层生效、不删数据」的缺口 -> 这里做存储层硬清理。
+  // 只在 add 新增时触发; 去重命中/加分(hit) 不增条数, 无需裁剪。
+  _prune() {
+    const max = this.opts.maxFacts;
+    if (!max || max <= 0 || this.facts.length <= max) return 0;
+    const nowD = this._nowDays();
+    const scored = this.facts.map((f) => {
+      const days = Math.max(0, nowD - new Date(f.lastAccess).getTime() / 86400000);
+      const recency = Math.exp(-this.opts.decayPerDay * this.opts.forgetSpeed * days * days); // 0~1
+      const imp = Math.min(f.importance || 0, 20) / 20; // 0~1
+      return { id: f.id, key: (f.score * (0.4 + 0.6 * recency)) * (0.5 + 0.5 * imp) };
+    });
+    scored.sort((a, b) => b.key - a.key);
+    const keep = new Set(scored.slice(0, max).map((x) => x.id));
+    const before = this.facts.length;
+    this.facts = this.facts.filter((f) => keep.has(f.id));
+    this.rebuildIndex(); // 重建倒排索引 (内部已清 _statsCache)
+    this.save();
+    return before - this.facts.length;
   }
 
   // 字符级索引 key: 中文拆单字 + 英文按 token (对中文检索才有效)
@@ -205,10 +233,69 @@ export class FactStore {
       if (ql && fc.includes(ql)) s += 5;
       // 命中权重 (辅助)
       s += (f.hits > 0 ? Math.min(f.hits, 5) : 0);
+      // 重要性因子 (补齐 CrewAI 三因子: 语义×时效×重要性); 默认 importance=10 -> +1.5, 不喧宾夺主
+      s += Math.min(f.importance || 0, 20) / 20 * 3;
       if (s >= minScore) scored.push({ ...f, effectiveScore: s, bm25: bm });
     }
     scored.sort((a, b) => b.effectiveScore - a.effectiveScore);
     return scored.slice(0, limit);
+  }
+
+  // 多查询变体检索 + RRF 融合 (供 LLM 查询扩展等场景: 每个变体各查一遍再融合)
+  queryMulti(queries, { limit = 5, scope = null, minScore = 1 } = {}) {
+    const lists = [];
+    for (const q of queries) {
+      const r = this.query(q, { limit: Math.max(limit * 2, 10), scope, minScore });
+      if (r.length) lists.push(r);
+    }
+    if (!lists.length) return [];
+    if (lists.length === 1) return lists[0].slice(0, limit);
+    return rrfFuse(lists).slice(0, limit);
+  }
+
+  // ---- 可插拔 embedder (dense 语义检索, 零依赖默认关闭) ----
+  // 用户注入: ctx.consume("facts").setEmbedder(async (text) => number[])
+  setEmbedder(fn) {
+    this.embedder = typeof fn === "function" ? fn : null;
+    this._embedCache.clear();
+    return this;
+  }
+
+  async _embed(text) {
+    if (!this.embedder) throw new Error("未配置 embedder");
+    const v = await this.embedder(String(text));
+    return Array.isArray(v) && v.length ? v : null;
+  }
+
+  // 余弦相似度 (零依赖)
+  _cosine(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+    if (!na || !nb) return 0;
+    return dot / (Math.sqrt(na) * Math.sqrt(nb));
+  }
+
+  // 语义检索: embedder 有则 dense cosine 排序 + 与 BM25 RRF 融合; 无则退化为 BM25
+  async querySemantic(q, { limit = 5, scope = null } = {}) {
+    if (!this.embedder) return this.query(q, { limit, scope });
+    const scoped = scope == null ? this.facts : this.facts.filter((f) => f.scope === scope);
+    const qv = await this._embed(q).catch(() => null);
+    if (!qv) return this.query(q, { limit, scope });
+    // 懒加载每条事实的 embedding (内存缓存, 不落盘避免 facts.json 膨胀)
+    const dense = [];
+    for (const f of scoped) {
+      let ev = this._embedCache.get(f.id);
+      if (!ev) {
+        try { ev = await this._embed(f.content); } catch { ev = null; }
+        this._embedCache.set(f.id, ev);
+      }
+      if (ev) dense.push({ ...f, dense: this._cosine(qv, ev) });
+    }
+    dense.sort((a, b) => b.dense - a.dense);
+    // dense 与 BM25 双路 RRF 融合
+    const bm25 = this.query(q, { limit, scope });
+    return rrfFuse([dense, bm25]).slice(0, limit);
   }
 
   hit(id) {
@@ -237,8 +324,44 @@ export class FactStore {
   count() {
     return this.facts.length;
   }
+
+  // 可观测: L1 原子记忆统计 (总量/来源分布/类型分布), 供 agent.stats() 聚合
+  stats() {
+    const bySource = {};
+    const byType = {};
+    for (const f of this.facts) {
+      const s = f.source || "unknown";
+      const t = f.type || "general";
+      bySource[s] = (bySource[s] || 0) + 1;
+      byType[t] = (byType[t] || 0) + 1;
+    }
+    return {
+      total: this.facts.length,
+      max_facts: this.opts.maxFacts || 0,
+      by_source: bySource,
+      by_type: byType,
+    };
+  }
 }
 
 function cryptoRandomId() {
   return "f_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+// RRF (Reciprocal Rank Fusion): 融合多个排序列表 (每项按 rank 倒数加权求和)。
+// 用于多查询变体/多信号检索的融合, 纯函数零依赖。
+export function rrfFuse(lists, { k = 60 } = {}) {
+  const score = new Map(); // id -> fused score
+  const items = new Map(); // id -> item (保留首个出现的对象)
+  for (const list of lists) {
+    list.forEach((item, rank) => {
+      const id = item && item.id;
+      if (id == null) return;
+      if (!items.has(id)) items.set(id, item);
+      score.set(id, (score.get(id) || 0) + 1 / (k + rank + 1));
+    });
+  }
+  return [...score.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([id]) => items.get(id));
 }

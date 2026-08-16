@@ -142,6 +142,7 @@ export class SessionStore {
     const f = this._safe(fromKey), t = this._safe(toKey);
     if (f === t) return false;
     if (!this._logs.has(f)) return false;
+    if (this._logs.has(t)) return false; // 目标已存在, 拒绝覆盖防数据丢失 [复审 P1]
     const events = this._logs.get(f);
     this._logs.set(t, [...events]);
     const lastSeq = events.length ? events[events.length - 1].seq : 0;

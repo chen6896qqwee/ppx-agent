@@ -5,6 +5,9 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { Channel } from "./base.js";
+import {
+  listProviders, addProvider, updateProvider, removeProvider, reorderProviders,
+} from "../config/providers.js";
 
 const MAX_BODY = 1024 * 1024;          // 请求体上限 1MB
 const RATE_PER_MIN = 60;               // 每 IP 每分钟最大请求数 (令牌桶)
@@ -244,10 +247,10 @@ export class HttpChannel extends Channel {
         res.end(JSON.stringify(this.agent.traces.read(undefined, limit)));
         return;
       }
-      // 统计 API
+      // 统计 API (聚合记忆/轨迹/工具/经验/自愈)
       if (req.method === "GET" && reqPath === "/api/stats") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(this.agent.traces.stats()));
+        res.end(JSON.stringify(this.agent.stats ? this.agent.stats() : this.agent.traces.stats()));
         return;
       }
       // 记忆 API
@@ -256,6 +259,127 @@ export class HttpChannel extends Channel {
         const facts = this.agent.facts ? this.agent.facts.list().slice(0, 20).map((f) => ({ content: f.content, score: f.score, type: f.type })) : [];
         const scenes = this.agent.scenes ? this.agent.scenes.listWithDesc().slice(-10) : [];
         res.end(JSON.stringify({ facts, scenes }));
+        return;
+      }
+
+      // 提供方 API [本轮新增] - 模型配置 Web UI 后端
+      // GET    /api/providers        列出全部提供方 (key 抹掉, 只返 api_key_set 标志)
+      // POST   /api/providers        新增 (body: { provider: {...} })
+      // PUT    /api/providers        更新 (body: { id, patch: {...} })
+      // DELETE /api/providers        删除 (body: { id })
+      // POST   /api/providers/test   健康探测 (body: { id }), 复用 LLMClient.health()
+      // POST   /api/providers/reorder 重排 (body: { order: [id1, id2, ...] })
+      if (req.method === "GET" && reqPath === "/api/providers") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const providers = listProviders(this.agent.root);
+        const defaultId = providers[0] ? providers[0].id : null;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ providers, default_id: defaultId }));
+        return;
+      }
+      if (req.method === "POST" && reqPath === "/api/providers") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const body = await this._readBody(req, res);
+        if (body === null) return;
+        try {
+          const data = JSON.parse(body || "{}");
+          const raw = data.provider || data;
+          const created = addProvider(this.agent.root, raw);
+          // 热重载 (新增默认时让 agent 立即可用)
+          this.agent.reloadProviders();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, provider: created }));
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+        return;
+      }
+      if (req.method === "PUT" && reqPath === "/api/providers") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const body = await this._readBody(req, res);
+        if (body === null) return;
+        try {
+          const data = JSON.parse(body || "{}");
+          if (!data.id) throw new Error("缺少 id");
+          const updated = updateProvider(this.agent.root, data.id, data.patch || {});
+          this.agent.reloadProviders();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, provider: updated }));
+        } catch (e) {
+          const code = /不存在|缺少/.test(e.message) ? 404 : 400;
+          res.writeHead(code, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+        return;
+      }
+      if (req.method === "DELETE" && reqPath === "/api/providers") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const body = await this._readBody(req, res);
+        if (body === null) return;
+        try {
+          const data = JSON.parse(body || "{}");
+          if (!data.id) throw new Error("缺少 id");
+          const removed = removeProvider(this.agent.root, data.id);
+          this.agent.reloadProviders();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, provider: removed }));
+        } catch (e) {
+          const code = /不存在|缺少/.test(e.message) ? 404 : 400;
+          res.writeHead(code, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+        return;
+      }
+      if (req.method === "POST" && reqPath === "/api/providers/test") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const body = await this._readBody(req, res);
+        if (body === null) return;
+        try {
+          const data = JSON.parse(body || "{}");
+          if (!data.id) throw new Error("缺少 id");
+          // 优先复用 agent 已有的 LLM 客户端 (含测试注入的 stub), 避免对磁盘配置的真实网络探测
+          // 兜底顺序: allProviders → agent.llm → 磁盘临时构造
+          let client = (this.agent.allProviders || []).find((c) => c.providerId === data.id);
+          let fromCache = !!client;
+          if (!client && this.agent.llm && this.agent.llm.providerId === data.id) {
+            client = this.agent.llm;
+            fromCache = true;
+          }
+          if (!client) {
+            const { readConfig } = await import("../config/providers.js");
+            const { providers } = readConfig(this.agent.root);
+            const p = providers.find((x) => x.id === data.id);
+            if (!p) throw new Error("提供方不存在");
+            const { LLMClient } = await import("../llm/client.js");
+            client = new LLMClient(p);
+          }
+          const healthy = await client.health();
+          const detail = healthy
+            ? `${client.backend === "openclaw" ? "openclaw 后端: Node 版本满足" : client.backend === "deepseek" ? "dsh 源码就绪" : fromCache ? "复用 agent 客户端, 探测通过" : "API 端点可达"}`
+            : "探测失败, 请检查 key/base_url/engine 路径/Node 版本";
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, healthy, detail, source: fromCache ? "agent-cache" : "disk-config" }));
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+        return;
+      }
+      if (req.method === "POST" && reqPath === "/api/providers/reorder") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const body = await this._readBody(req, res);
+        if (body === null) return;
+        try {
+          const data = JSON.parse(body || "{}");
+          const providers = reorderProviders(this.agent.root, data.order || []);
+          this.agent.reloadProviders();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, providers }));
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
         return;
       }
 

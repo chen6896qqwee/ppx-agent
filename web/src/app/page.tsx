@@ -1,5 +1,7 @@
 ﻿"use client";
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { listProviders, type Provider } from "../lib/api";
 
 type Msg = { role: "user" | "agent"; content: string };
 type Scene = { id: string; name: string; mode: string; description: string; canHelp: string; facts: number; lastUpdated: string };
@@ -16,9 +18,16 @@ export default function Home() {
   const [traces, setTraces] = useState<Trace[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [snum, setSnum] = useState(-1);
+  const [providers, setProviders] = useState<Provider[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { endRef.current?.scrollIntoView(); }, [msgs]);
+
+  // 首启检测: 没有任何就绪提供方时显示顶部引导条 (仅一次, 配好后自动消失)
+  useEffect(() => {
+    listProviders().then((r) => setProviders(r.providers)).catch(() => {});
+  }, []);
+  const hasReady = providers.some((p) => p.api_key_set || p.mjs || p.dsh_root);
 
   async function send() {
     const t = input.trim(); if (!t || busy) return;
@@ -65,8 +74,17 @@ export default function Home() {
             <h1 className="text-sm font-semibold">皮皮虾</h1>
             <p className="text-[11px] text-neutral-500">PPX Agent · 零依赖智能体内核</p>
           </div>
-          <span className="ml-auto rounded-full bg-[#1d2a3a] px-2.5 py-0.5 text-[11px] text-[#4da3ff]">在线</span>
+          <Link href="/settings/model" className="ml-auto rounded-lg border border-neutral-700 px-3 py-1.5 text-[12px] text-neutral-300 hover:bg-neutral-800 hover:text-neutral-200">设置</Link>
+          <span className="rounded-full bg-[#1d2a3a] px-2.5 py-0.5 text-[11px] text-[#4da3ff]">在线</span>
         </header>
+        {!hasReady && (
+          <div className="flex items-center gap-3 border-b border-[#5e2b2b] bg-[#2b1616] px-5 py-3 text-[12px] text-[#ffb4b4]">
+            <span>⚠️</span>
+            <span className="flex-1">还没有配置任何模型, 皮皮虾现在无法对话。先去设置 → 模型 连一个模型吧。</span>
+            <Link href="/settings/model" className="rounded-lg bg-[#ff6b6b] px-3 py-1 text-[11px] font-medium text-white hover:bg-[#e25555]">前往配置</Link>
+            <button onClick={() => setProviders([{ id: "_dismiss", api_key_set: true } as Provider])} className="text-[11px] text-neutral-500 hover:text-neutral-300" title="稍后再说">✕</button>
+          </div>
+        )}
         <div className="flex-1 space-y-3 overflow-y-auto p-5">
           {msgs.length === 0 && <p className="mt-10 text-center text-sm text-neutral-600">和皮皮虾聊聊吧</p>}
           {msgs.map((m, i) => (

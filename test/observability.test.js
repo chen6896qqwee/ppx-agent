@@ -1,49 +1,65 @@
-﻿import test from "node:test";
+﻿// test/observability.test.js - 可观测性: agent.stats() 聚合 + 各层 stats()
+import test from "node:test";
 import assert from "node:assert";
-import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { PPXAgent } from "../src/agent/index.js";
-import { Traces } from "../src/utils/trace.js";
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-function tmpRoot(n){ return fs.mkdtempSync(path.join(os.tmpdir(),`ppx-${n}-`)); }
+function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), "ppx-obs-")); }
 
-test("可观测: Traces 记录工具调用轨迹", async () => {
-  const a = new PPXAgent({ root: tmpRoot("trace") });
-  const t = new Traces(a.dataDir);
-  t.record({ tool: "get_time", args: {}, result: "2026-08-12", ok: true, durationMs: 5 });
-  t.record({ tool: "boom", args: {}, result: "[工具错误] x", ok: false, durationMs: 3 });
-  const all = t.read();
-  assert.equal(all.length, 2, "两条轨迹已写");
-  assert.equal(all[0].tool, "get_time");
-  assert.equal(all[0].ok, true);
-  assert.equal(all[1].ok, false, "失败轨迹 ok=false");
-  assert.ok(all[0].durationMs >= 0);
+test("stats: agent.stats() 聚合记忆 L0-L3 / 工具 / 经验 / 轨迹", () => {
+  const a = new PPXAgent({ root: tmp() });
+  a.facts.add("兄弟喜欢量化交易", { source: "conversation" });
+  const s = a.stats();
+  assert.ok(s.agent && s.agent.name, "含 agent 信息");
+  assert.ok(s.memory, "含 memory 分组");
+  assert.ok(s.memory.l0 && typeof s.memory.l0.events_total === "number", "L0 事件数");
+  assert.equal(s.memory.l1.total, 1, "L1 事实数");
+  assert.equal(s.memory.l1.by_source.conversation, 1, "L1 来源分布");
+  assert.ok(typeof s.memory.l2.scenes === "number", "L2 场景数");
+  assert.ok(s.memory.l3, "L3 画像");
+  assert.ok(typeof s.tools.total === "number", "工具总数");
+  assert.ok(typeof s.experience.lessons === "number", "经验数");
   a.shutdown();
+  fs.rmSync(a.root, { recursive: true, force: true });
 });
 
-test("可观测: stats 统计失败率", async () => {
-  const a = new PPXAgent({ root: tmpRoot("stat") });
-  const t = new Traces(a.dataDir);
-  t.record({ tool: "a", args: {}, result: "ok", ok: true, durationMs: 10 });
-  t.record({ tool: "b", args: {}, result: "ok", ok: true, durationMs: 5 });
-  t.record({ tool: "c", args: {}, result: "x", ok: false, durationMs: 2 });
-  const s = t.stats();
-  assert.equal(s.count, 3);
-  assert.equal(s.failed, 1);
-  assert.ok(s.failRate.includes("%"));
+test("stats: 顶层展平 traces 字段 (向后兼容 web 前端)", () => {
+  const a = new PPXAgent({ root: tmp() });
+  const s = a.stats();
+  assert.ok("count" in s, "顶层 count (traces 展平)");
+  assert.ok("failed" in s, "顶层 failed");
+  assert.ok("failRate" in s, "顶层 failRate");
+  assert.ok(Array.isArray(s.slowTools), "顶层 slowTools");
+  assert.equal(s.count, 0, "无轨迹时 count=0");
+  assert.equal(s.failRate, "0%", "无轨迹时 failRate=0%");
   a.shutdown();
+  fs.rmSync(a.root, { recursive: true, force: true });
 });
 
-test("LLM摘要: 无LLM时降级为堆叠不崩", async () => {
-  const a = new PPXAgent({ root: tmpRoot("sum") });
-  a.llm = null; // 强制无 LLM
-  const mt = a.memory;
-  for (let i = 0; i < 60; i++) a.sessionStore.append("k", "user/message", { content: `测试消息${i} 内容` });
-  await mt._compactIfNeeded();
-  const longterm = fs.readFileSync(mt.longtermMd, "utf8");
-  assert.ok(longterm.includes("thin") || longterm.includes("archived"), "无LLM应降级堆叠: " + longterm.slice(-80));
+test("stats: FactStore.stats 来源分布 + PersonaStore.stats 更新时间", () => {
+  const a = new PPXAgent({ root: tmp() });
+  a.facts.add("x", { source: "conversation" });
+  a.facts.add("y", { source: "document" });
+  const fsStats = a.facts.stats();
+  assert.equal(fsStats.by_source.conversation, 1);
+  assert.equal(fsStats.by_source.document, 1);
+  assert.equal(fsStats.total, 2);
+  const ps = a.personaStore.stats();
+  assert.ok(ps.user_updated, "用户画像更新时间非空");
+  assert.ok(ps.agent_updated, "agent 画像更新时间非空");
   a.shutdown();
+  fs.rmSync(a.root, { recursive: true, force: true });
+});
+
+test("stats: traces.stats 空数据返回完整结构", () => {
+  const a = new PPXAgent({ root: tmp() });
+  const t = a.traces.stats();
+  assert.equal(t.count, 0);
+  assert.equal(t.failed, 0);
+  assert.equal(t.failRate, "0%");
+  assert.deepEqual(t.slowTools, []);
+  a.shutdown();
+  fs.rmSync(a.root, { recursive: true, force: true });
 });

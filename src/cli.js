@@ -1,9 +1,9 @@
-﻿#!/usr/bin/env node
-// src/cli.js - 皮皮虾 CLI 交互入口
+#!/usr/bin/env node
+// src/cli.js - 皮皮虾 CLI 交互入口 (readline 历史 + interrupt 中断)
 import path from "node:path";
+import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { PPXAgent } from "./agent/index.js";
-import { info } from "./utils/logger.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const agent = new PPXAgent({ root: ROOT });
@@ -12,18 +12,69 @@ console.log("======================================");
 console.log("  皮皮虾 (PPX) - 自我修复·自我学习 Agent");
 console.log(`  记忆:${agent.facts.count()}条 | 经验:${agent.experience.lessons.length}条`);
 console.log(`  模型: ${agent.llm ? "已配置" : "未配置(离线记忆模式)"}`);
-console.log("  输入 quit/exit 退出");
+console.log("  命令: quit/exit 退出 | /stop 中断当前任务 | /reset 清空会话");
+console.log("        ↑↓ 浏览历史 | Ctrl+C 中断(再按一次退出)");
 console.log("======================================");
 
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", async (d) => {
-  const line = d.toString().trim();
-  if (!line) return;
-  if (["quit", "exit", "q"].includes(line.toLowerCase())) {
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+  prompt: "皮皮虾> ",
+  terminal: true,
+});
+
+let busy = false; // 防止任务执行中重复输入
+
+rl.on("line", async (line) => {
+  const text = line.trim();
+  if (!text) return rl.prompt();
+  if (busy) return rl.prompt(); // 上一轮任务未结束, 忽略输入 (可用 /stop 或 Ctrl+C 打断)
+
+  // 退出
+  if (["quit", "exit", "q"].includes(text.toLowerCase())) {
     agent.shutdown();
     console.log("皮皮虾 收工, 已保存记忆。");
     process.exit(0);
   }
-  const r = await agent.chat(line);
-  console.log("\n" + r + "\n");
+  // 中断当前任务 (Human-in-the-loop)
+  if (text === "/stop") {
+    agent.interrupt();
+    console.log("(已发送中断信号, 当前任务将尽快停下)");
+    return rl.prompt();
+  }
+  // 清空会话
+  if (text === "/reset") {
+    agent.resetSession("default");
+    console.log("(会话已清空)");
+    return rl.prompt();
+  }
+
+  busy = true;
+  try {
+    const r = await agent.chat(text);
+    console.log("\n" + r + "\n");
+  } catch (e) {
+    console.log("\n[错误] " + e.message + "\n");
+  } finally {
+    busy = false;
+  }
+  rl.prompt();
 });
+
+// Ctrl+C: 第一次中断任务, 第二次退出
+let ctrlC = 0;
+rl.on("SIGINT", () => {
+  ctrlC += 1;
+  if (ctrlC >= 2) {
+    agent.shutdown();
+    console.log("\n皮皮虾 收工。");
+    process.exit(0);
+  }
+  agent.interrupt();
+  console.log("\n(已中断, 再按一次 Ctrl+C 退出)");
+  rl.prompt();
+  // 重置计数 (若任务继续则允许再次单次中断)
+  setTimeout(() => { ctrlC = 0; }, 1000);
+});
+
+rl.prompt();

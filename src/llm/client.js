@@ -20,6 +20,13 @@ export function nodeVersionOk(version) {
          (maj === 24 && min >= 15) ||
          (maj === 25 && min >= 9) || maj > 25;
 }
+// 按 token 预算截断字符串 (用于 persona 截断, 保留头的 key 信息)
+function truncateByTokens(s, budget) {
+  const str = String(s || "");
+  const maxLen = Math.floor(budget * 1.6); // token*1.6 ≈ 字符
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen) + `\n...[persona 已按预算截断, 共 ${str.length} 字符]...`;
+}
 export class LLMClient {
   constructor(provider) {
     this.providerId = provider.id || "openclaw";
@@ -30,6 +37,7 @@ export class LLMClient {
     this.baseUrl = (provider.base_url || "").replace(/\/$/, "");
     this.apiKey = provider.api_key || process.env[provider.api_key_env] || "";
     this.model = provider.model || provider.models?.chat || "gpt-4o-mini";
+    this.vision = !!provider.vision; // 是否支持多模态 (视觉) — 标记后才会注入图片到 user 消息
     this.timeoutMs = provider.timeout_ms || 120000;
     // openclaw 后端专用
     this.mjs = provider.mjs || DEFAULT_MJS;
@@ -194,12 +202,57 @@ export class LLMClient {
   }
 
   // 围栏代理循环: 把工具清单注入, 引擎以纯 LLM 输出工具意图, PPX 执行 [P0#1]
+  // 围栏上下文 token 预算 (v0.6.6 优化: 替代固定 800/400 字符截断)
+  // 按 token 预算动态分配: persona 优先 40%, 历史按"最新优先 + 信息量"分配剩余 60%
+  static get FENCE_CTX_TOKEN_BUDGET() { return 2400; }
+  static get FENCE_PERSONA_RATIO() { return 0.4; }
+  static get FENCE_HIST_BUDGET() { return 2400 * 0.6; }
+  static _estTokens(s) { return Math.ceil(String(s || "").length / 1.6); }
+  // 信息量启发: 含指令/数字/路径/结论的轮次更该保留
+  static _histPriority(m) {
+    const s = String(m?.content || "");
+    let p = 0;
+    if (/[查|算|写|建|改|创建|删除|修复|总结|分析|配置|执行|运行|启动|停止|提交|部署|安装|生成|编译|测试]/.test(s)) p += 2;
+    if (/[0-9]{2,}/.test(s)) p += 1;
+    if (/\.(js|py|md|json|txt|ts|go)\b|[:\\\/][A-Za-z]/.test(s)) p += 2;
+    if (/失败|错误|报错|异常|成功|完成|结果|结论|决定|方案/.test(s)) p += 2;
+    if (/^(你好|hi|hello|在吗|谢谢|好的|嗯|是的|对|收到|再见)/i.test(s.trim())) p -= 3;
+    return p;
+  }
   async _proxyChat(messages, { tools, toolRunner, engine }) {
     const fencePrompt = buildFencePrompt(tools);
-    // 取最后一条 user 消息作为任务
-    const lastUser = [...messages].reverse().find((m) => m && m.role === "user");
-    const task = lastUser?.content || "";
-    const combined = fencePrompt + "\n\n" + task;
+    // 保留 system/persona 设定 + 最近历史, 避免外部引擎只见"当前问题" [复审 P2]
+    const systemMsg = messages.find((m) => m && m.role === "system");
+    const nonSys = messages.filter((m) => m && m.role !== "system");
+    // person 预算: 固定 40%, 截断到预算内
+    const persona = systemMsg?.content
+      ? "角色设定:\n" + truncateByTokens(systemMsg.content, LLMClient.FENCE_CTX_TOKEN_BUDGET * LLMClient.FENCE_PERSONA_RATIO)
+      : null;
+    // 历史预算: 剩余 60% 按"最新优先 + 信息量"分配
+    const histBudget = LLMClient.FENCE_HIST_BUDGET;
+    let histLines = [], used = 0;
+    // 1) 最新 6 条按时间倒序, 优先保留(信息量高或最新)
+    const recent = nonSys.slice(-6);
+    for (let i = recent.length - 1; i >= 0; i--) {
+      const m = recent[i];
+      const line = (m.role === "user" ? "用户" : "助手") + ": " + String(m.content || "");
+      const t = LLMClient._estTokens(line);
+      if (used + t > histBudget) continue; // 超预算跳过(不截断硬塞)
+      histLines.push(line); used += t;
+    }
+    // 2) 若预算还有余量, 补更早的高信息量轮次
+    const older = nonSys.slice(0, Math.max(0, nonSys.length - 6));
+    for (let i = older.length - 1; i >= 0; i--) {
+      const m = older[i];
+      if (LLMClient._histPriority(m) < 2) continue; // 只补高信息量
+      const line = (m.role === "user" ? "用户" : "助手") + ": " + String(m.content || "");
+      const t = LLMClient._estTokens(line);
+      if (used + t > histBudget) break;
+      histLines.push(line); used += t;
+    }
+    histLines.reverse(); // 恢复时间正序
+    const ctx = [persona, histLines.length ? histLines.join("\n") : null].filter(Boolean).join("\n\n");
+    const combined = fencePrompt + "\n\n[上下文]\n" + ctx;
     const finalText = await proxyToolLoop(
       async (context) => {
         // 每条消息: 围栏协议 + 任务 + 累积工具结果
@@ -238,6 +291,14 @@ export class LLMClient {
       clearTimeout(timer);
     }
   }
+
+  // 是否支持逐字流式: 仅直连 HTTP API 后端 (openclaw/deepseek 为外部进程, 一次性返回) [复审 P2]
+  get supportsStream() { return this.backend !== "openclaw" && this.backend !== "deepseek"; }
+
+  // 是否支持原生 tool_calls: 仅 http 后端 (OpenAI 兼容 API)。
+  // openclaw 是完整 agent 运行时, 拒绝 PPX 的围栏协议(视为伪协议); dsh 走文本围栏。
+  // 工具类任务应优先路由到支持原生 tool_calls 的后端 (实测 LM Studio 原生 tool_calls 全链路通过)。
+  get supportsNativeToolCalls() { return this.backend === "http"; }
 
   apiKeyEnv() {
     return undefined;

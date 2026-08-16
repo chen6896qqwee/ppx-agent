@@ -51,7 +51,7 @@ export class Traces {
   // 统计: 失败率/平均耗时/慢工具
   stats(day = logicalDay()) {
     const all = this.read(day, 10000);
-    if (!all.length) return { count: 0 };
+    if (!all.length) return { count: 0, failed: 0, failRate: "0%", slowTools: [] };
     const failed = all.filter((t) => !t.ok);
     const byTool = {};
     for (const t of all) {

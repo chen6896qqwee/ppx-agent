@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 import { info, warn, error } from "../utils/logger.js";
+import { runDag } from "./dag.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WORKER = path.join(ROOT, "src", "orchestrator", "agent-worker.js");
@@ -99,6 +100,24 @@ export class Legion extends EventEmitter {
       }
     }
     return results;
+  }
+
+  // DAG 任务编排: 按依赖拓扑分层执行, 同层并行, 上游结果传入下游 (P3)
+  // graph = { nodes: [{ id, task, dependsOn?: [id], agent?: name }] }
+  // 返回 { results: {id: reply}, order: [执行顺序] }
+  async runDag(graph) {
+    const names = [...this.agents.keys()];
+    if (!names.length) throw new Error("军团为空, 先 spawnAgent");
+    let rr = 0; // round-robin 派发未指定 agent 的节点
+    return runDag(graph, async (id, node, deps) => {
+      const agent = node.agent || names[rr++ % names.length];
+      const depText = Object.entries(deps)
+        .map(([k, v]) => `${k}: ${String(v).slice(0, 500)}`)
+        .join("\n");
+      const message = node.task + (depText ? "\n\n[上游结果]\n" + depText : "");
+      const r = await this.send(agent, { type: "chat", message });
+      return r.reply;
+    });
   }
 
   // 关闭所有 agent

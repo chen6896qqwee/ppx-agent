@@ -8,7 +8,12 @@ import { WechatWebhookChannel } from "./channels/wechat.js";
 
 export async function startServer({ root = process.cwd(), port = 8899, host = "127.0.0.1", config = {}, llm = null } = {}) {
     const agent = new PPXAgent({ root });
-  if (llm) agent.llm = llm; // 测试注入 stub LLM, 避免依赖真实网络
+  if (llm) {
+    // 测试注入 stub LLM, 避免依赖真实网络; 同步把 allProviders 替换为同源 stub,
+    // 让 /api/providers/test 等"按 id 取客户端"的路径也能命中 stub
+    agent.llm = llm;
+    if (Array.isArray(agent.allProviders)) agent.allProviders = [llm];
+  }
   const channels = config.channels || {};
 
   // HTTP 通道
