@@ -318,6 +318,8 @@ export class PPXAgent {
   resetSession(sessionKey) { this.sessionStore.delete(sessionKey || "default"); }
 
   // 组装记忆上下文
+  // 差异化视角 (_perspective): 多 agent 场景下由委派方注入子 agent 的专属视角,
+  // 对抗同质失败 (Anthropic: 同模型+同上下文 → 一个错全错), 生命周期由调用方控制
   _context(userMsg) {
     const base = this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context(userMsg) + "\n\n" + this.experience.context() + this._l3Context();
     // 核心价值 (ANS 价值对齐): 注入最前, 独立于 prompt, 不可被后续指令违背
@@ -325,9 +327,10 @@ export class PPXAgent {
     // 引用规则 + 额外 system 内容均可配置 (agent.citation_rule / agent.system_extra)
     const citation = this.config.agent?.citation_rule || "";
     const extra = this.config.agent?.system_extra || "";
+    const perspective = this._perspective ? `【任务视角】${this._perspective}` : "";
     const active = this.scenes.activeContext(userMsg || "");
     const baseCtx = active ? base + "\n\n" + active : base;
-    return [values, baseCtx, citation, extra].filter(Boolean).join("\n\n");
+    return [values, baseCtx, citation, perspective, extra].filter(Boolean).join("\n\n");
   }
 
   // 核心价值文本 (委托 ans/values 模块): 数组 → 固定格式注入 (无值时不注入, 向后兼容)

@@ -31,7 +31,15 @@ process.stdin.on("data", async (chunk) => {
       const req = JSON.parse(line);
       if (req.type === "chat") {
         currentReqId = req.id;
-        const reply = await agent.chat(req.message);
+        // 差异化上下文 (多 agent 协调): 委派方可注入子 agent 专属视角, 对抗同质失败
+        const prevPerspective = agent._perspective;
+        agent._perspective = req.perspective ? String(req.perspective).slice(0, 4000) : null;
+        let reply;
+        try {
+          reply = await agent.chat(req.message);
+        } finally {
+          agent._perspective = prevPerspective;
+        }
         currentReqId = null;
         process.stdout.write(JSON.stringify({ id: req.id, type: "reply", reply }) + "\n");
       } else if (req.type === "ping") {
