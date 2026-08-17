@@ -79,6 +79,42 @@ test("FactStore.add(similarThreshold=0): 不启用语义去重 (向后兼容)", 
   fs.rmSync(a.dataDir, { recursive: true, force: true });
 });
 
+// ---- overlap 语义去重 (词序变化大的松散变体) ----
+test("FactStore._overlap: 词序变化的同义改写 overlap 高于 Jaccard", () => {
+  const a = new PPXAgent({ root: tmpRoot("ovl") });
+  // 真实生产数据中的同义变体 (词序措辞变化大, Jaccard 仅 0.58)
+  const A = "用户在提出任务时，需要提供详细的任务内容，而不是仅仅使用编号，以提高处理效率。";
+  const B = "用户提出的任务时，需要提供具体的任务内容，而不是仅仅使用编号，以提高效率。";
+  const j = a.facts._jaccard(A, B);
+  const o = a.facts._overlap(A, B);
+  assert.ok(o > j, `overlap(${o.toFixed(2)}) 应高于 jaccard(${j.toFixed(2)}) 对词序松散变体`);
+  assert.ok(o > 0.65, "overlap 应能捕获松散同义改写");
+  a.shutdown();
+  fs.rmSync(a.dataDir, { recursive: true, force: true });
+});
+
+test("FactStore.add(similarThreshold): 松散变体经 overlap 兜底命中加分", () => {
+  const a = new PPXAgent({ root: tmpRoot("ovladd") });
+  a.facts.add("用户在提出任务时，需要提供详细的任务内容，而不是仅仅使用编号，以提高处理效率。", { source: "manual" });
+  const before = a.facts.count();
+  // 词序变化大, Jaccard 0.58 <0.6, 但 overlap 0.78 >=0.6, 应被兜底命中
+  a.facts.add("用户提出的任务时，需要提供具体的任务内容，而不是仅仅使用编号，以提高效率。", { source: "extract", similarThreshold: 0.6 });
+  assert.equal(a.facts.count(), before, "松散变体不新增");
+  const all = a.facts.list();
+  assert.ok(all[0].hits >= 1, "hits 加分");
+  a.shutdown();
+  fs.rmSync(a.dataDir, { recursive: true, force: true });
+});
+
+test("FactStore.findSimilar(method=overlap): 词序变化变体可被找到", () => {
+  const a = new PPXAgent({ root: tmpRoot("ovlfind") });
+  a.facts.add("用户在提出任务时，需要提供详细的任务内容，而不是仅仅使用编号，以提高处理效率。", { source: "manual" });
+  const found = a.facts.findSimilar("用户提出的任务时，需要提供具体的任务内容，而不是仅仅使用编号，以提高效率。", { threshold: 0.65, method: "overlap" });
+  assert.ok(found, "overlap 方法应找到词序变化的相似事实");
+  a.shutdown();
+  fs.rmSync(a.dataDir, { recursive: true, force: true });
+});
+
 // ---- L3 画像展示前去重 ----
 test("L3 buildAgentPersona: 重复经验在画像中只展示一次", () => {
   const a = new PPXAgent({ root: tmpRoot("l3dd") });

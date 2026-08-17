@@ -1,5 +1,27 @@
 ﻿# CHANGELOG
 
+## v1.0.4 (2026-08-17) — 感知式记忆提炼 + 存量变体清理
+
+依据 EVALUATION-2026-08-17 (第四轮) 三项整改全部落地:
+
+### P1 感知式提炼 (从源头防同主题重复)
+- **`_extractMemory(user, assistant, existing)`**: 提炼前检索与本次对话相关的已有记忆 (同主题 top 3), 喂给 LLM 让其跳过与已有记忆同义/被覆盖的提炼结果 — 从源头减少"任务描述要详细"这类松散变体反复入库
+- **`FactStore._overlap()` + `findSimilar(method=overlap)`**: bigram overlap (交集/较短者) 系数, 对"词序变化大但共享核心词"的松散同义改写比 Jaccard 更敏感
+- **`add()` 双保险**: similarThreshold 时先 Jaccard 再 overlap 兜底命中
+- **`memory-ticker` extractor 通道**: 传入相关记忆 + 高命中 (hits>5) 事实跳过提炼
+
+### P2 存量清理
+- 生产 facts 23→19 条 (overlap 0.65 合并 4 条同义变体, 最高 Jaccard 0.583→0.385)
+- L3 画像"三件套"重复行 10→1
+- `dedupe-facts.js` 新增 `--overlap <阈值>` 选项 (与 --similar 可叠加)
+
+### P3 文档
+- README 新增「评测与 CI」节: eval/--llm/PPX_E2E_* secrets 配置指引
+
+### 验证
+- 全量测试 389 项 385 过 0 失败 4 跳过 (网络型), 3.6s
+- 新增 3 项 overlap 去重测试 (真实生产变体数据校准)
+
 ## v1.0.3 (2026-08-17) — 数据卫生收尾 + 测试提速 30 倍
 
 依据 EVALUATION-2026-08-17 (第三轮) 五项整改全部落地:
@@ -18,7 +40,7 @@
 - **health.test.js 10.7s → 0.09s**: 真实 /models 探测加网络 gate skip (PPX_NET_TEST=1 才跑, 与其他网络测试一致)
 
 ### 验证
-- 全量测试 387 项 383 过 0 失败 4 跳过 (网络型) — 从 107s 降至 3.5s
+- 全量测试 386 项 382 过 0 失败 4 跳过 (网络型) — 从 107s 降至 3.5s
 - web tsc --noEmit 0 错误
 
 ## v1.0.2 (2026-08-17) — 记忆去重闭环 + 语言统一中文

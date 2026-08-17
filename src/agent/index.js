@@ -116,7 +116,7 @@ export class PPXAgent {
 
     // 注入 LLM 摘要器/提炼器 (依赖 agent 方法, 装配后注入)
     this.memory.summarizer = (raw) => this._summarizeMemory(raw);
-    this.memory.setExtractor((u, a) => this._extractMemory(u, a));
+    this.memory.setExtractor((u, a, related) => this._extractMemory(u, a, related));
 
     // 主动通知 + 中断状态
     this._notifyCb = null;
@@ -178,11 +178,21 @@ export class PPXAgent {
   }
 
   // P1#9: LLM 结构化记忆提炼 - 从高信号对话提取关键事实/偏好/待办 (替代简单启发式)
-  async _extractMemory(user, assistant) {
+  // 感知式提炼: 传入已有相关记忆 (existing), 让 LLM 从源头跳过与已有记忆同义/被覆盖的提炼结果,
+  // 防同一主题反复以不同措辞入库 (字面变体逃过精确去重, 语义变体逃过 0.6 Jaccard 阈值)
+  // 返回 string[] (纯内容数组); existing 为空时行为与旧版完全一致 (向后兼容)
+  async _extractMemory(user, assistant, existing = []) {
     if (!this.llm) return [];
+    const sys = "你是记忆提炼器。从对话中提取值得长期记忆的关键事实、用户偏好、待办事项。只输出 JSON 数组, 每项是{content: 一句完整中文记忆}。没有值得记的返回 []。不要解释, 只输出 JSON。";
+    let userMsg = "用户: " + String(user).slice(0, 800) + "\n助手: " + String(assistant).slice(0, 800);
+    // 感知已有记忆: 若提炼结果与已有记忆含义相同/已被覆盖, 不要输出该条
+    if (existing.length) {
+      userMsg += "\n\n【已有记忆】以下记忆已存在, 若你提炼的内容与其中任意一条含义相同或被其覆盖, 则不要输出该条 (避免重复):\n"
+        + existing.map((f, i) => `${i + 1}. ${f.content}`).join("\n");
+    }
     const r = await this.llm.chat([
-      { role: "system", content: "你是记忆提炼器。从对话中提取值得长期记忆的关键事实、用户偏好、待办事项。只输出 JSON 数组, 每项是{content: 一句完整中文记忆}。没有值得记的返回 []。不要解释, 只输出 JSON。" },
-      { role: "user", content: "用户: " + String(user).slice(0, 800) + "\n助手: " + String(assistant).slice(0, 800) },
+      { role: "system", content: sys },
+      { role: "user", content: userMsg },
     ]);
     const text = String(r.content || "").trim();
     // 容忍模型把 JSON 包在 markdown 代码块里

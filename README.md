@@ -68,6 +68,20 @@ node src/server.js   # http://127.0.0.1:8899
 npm run test
 ```
 
+## 🧪 评测与 CI
+
+- **本地能力评测**: `npm run eval` — 零依赖跑问候/时间/记忆/生命周期等 7 项 (无需 LLM)
+- **LLM 端到端评测**: `npm run eval -- --llm` — 加跑真实 LLM 问答/工具调用回归, provider 三选一:
+  - `--provider <id>`: 用 config/ppx.json 里指定的 provider
+  - `PPX_E2E_BASE_URL` + `PPX_E2E_API_KEY` + `PPX_E2E_MODEL` 环境变量
+  - 默认探活本地 LM Studio (http://127.0.0.1:1234)
+- **GitHub Actions CI**: push/PR 自动跑全量测试 + web 类型检查/构建 + 本地评测。要启用 LLM 回归, 在仓库 Settings → Secrets 配置三个变量 (均需配置才触发):
+  - `PPX_E2E_BASE_URL` (OpenAI 兼容端点, 如 `https://api.deepseek.com/v1`)
+  - `PPX_E2E_API_KEY`
+  - `PPX_E2E_MODEL` (如 `deepseek-chat`)
+- **压测**: `npm run bench` — 并发/长会话吞吐基线
+
+
 ## 🔌 模型接入 (API 优先)
 
 皮皮虾支持任意 **OpenAI 兼容端点**, 自动多 provider 回退:
@@ -121,7 +135,7 @@ ppx-agent/
 │   ├── llm/        LLM 客户端
 │   └── utils/      基础设施
 ├── data/           运行时数据 (不进 git)
-├── test/           测试 (387 项 383 过 0 失败 4 网络跳过)
+├── test/           测试 (389 项 385 过 0 失败 4 网络跳过)
 └── docs/           文档
 ```
 

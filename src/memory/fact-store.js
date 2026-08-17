@@ -83,10 +83,11 @@ export class FactStore {
           this.save();
           return existing;
         }
-        // 语义相似去重: similarThreshold>0 时, 与现有事实 bigram Jaccard 相似度达标则命中加分
-        // 解决 LLM 提炼变体 (字面不同但语义相同) 反复入库的冗余问题
+        // 语义相似去重: similarThreshold>0 时, 与现有事实相似度达标则命中加分
+        // 双保险: 先 Jaccard (模板类变体), 未命中再 overlap (词序变化大的松散变体)
         if (similarThreshold > 0) {
-          const similar = this.findSimilar(norm, { threshold: similarThreshold, scope });
+          const similar = this.findSimilar(norm, { threshold: similarThreshold, scope })
+            || this.findSimilar(norm, { threshold: similarThreshold, scope, method: "overlap" });
           if (similar) {
             similar.hits += 1;
             similar.lastAccess = now;
@@ -232,16 +233,29 @@ export class FactStore {
     return union ? inter / union : 0;
   }
 
+  // bigram overlap 系数 (0~1): 交集 / 较短集合, 对「词序变化但共享核心词」的松散同义改写更敏感
+  // 比 Jaccard 更宽松: LLM 提炼变体词序/措辞大变时 Jaccard 可能 <0.6, 但核心词重合度高, overlap 能捕获
+  _overlap(a, b) {
+    const A = this._bigramSet(a);
+    const B = this._bigramSet(b);
+    if (!A.size || !B.size) return 0;
+    let inter = 0;
+    for (const t of A) if (B.has(t)) inter++;
+    return inter / Math.min(A.size, B.size);
+  }
+
   // 查找与给定内容最相似的现有事实 (相似度 >= threshold 才返回, 默认 null)
+  // method: "jaccard" (默认) 或 "overlap" (词序变化容错)
   // 供 add(similarThreshold) / 提炼去重使用; 中文 bigram 变体通常 >0.6
-  findSimilar(content, { threshold = 0.6, scope = null } = {}) {
+  findSimilar(content, { threshold = 0.6, scope = null, method = "jaccard" } = {}) {
     const c = this._norm(content);
     if (!c) return null;
     const scoped = scope == null ? this.facts : this.facts.filter((f) => f.scope === scope);
+    const fn = method === "overlap" ? (a, b) => this._overlap(a, b) : (a, b) => this._jaccard(a, b);
     let best = null;
     let bestScore = 0;
     for (const f of scoped) {
-      const s = this._jaccard(c, f.content);
+      const s = fn(c, f.content);
       if (s > bestScore) { bestScore = s; best = f; }
     }
     return bestScore >= threshold ? best : null;

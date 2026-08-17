@@ -2,14 +2,18 @@
 // 背景: _normKey() 归一化去重只防新增 (fact-store.add), 存量重复需合并清理
 // 逻辑:
 //   默认: 按归一化键分组, 每组保留 score+hits 最高的那条, 累加 hits, 移除其余
-//   --similar [阈值]: 额外做语义去重 (bigram Jaccard >= 阈值合并), 针对 LLM 提炼的字面变体
-// 用法: node scripts/dedupe-facts.js [dataDir] [--similar 0.6]   (默认 ./data)
+//   --similar [阈值]: bigram Jaccard >= 阈值合并 (模板类同义变体, 默认 0.6)
+//   --overlap [阈值]: bigram overlap (交集/较短者) >= 阈值合并 (词序变化的松散变体, 默认 0.65)
+//     两者可叠加: 先 --similar 再 --overlap, 覆盖字面重复 + 语义变体两层
+// 用法: node scripts/dedupe-facts.js [dataDir] [--similar 0.6] [--overlap 0.65]   (默认 ./data)
 import path from "node:path";
 import { FactStore } from "../src/memory/fact-store.js";
 
 const args = process.argv.slice(2);
 const simIdx = args.indexOf("--similar");
 const similarThreshold = simIdx >= 0 ? Number(args[simIdx + 1] || 0.6) : 0;
+const ovIdx = args.indexOf("--overlap");
+const overlapThreshold = ovIdx >= 0 ? Number(args[ovIdx + 1] || 0.65) : 0;
 const dataDir = path.resolve(args[0] || path.join(process.cwd(), "data"));
 const store = new FactStore(dataDir);
 let before = store.list();
@@ -60,7 +64,43 @@ if (similarThreshold > 0) {
     return rep;
   });
   removed += kept.length - merged.length;
-  console.log(`\n语义去重 (阈值 ${similarThreshold}): ${kept.length} -> ${merged.length} (合并 ${kept.length - merged.length} 条变体)`);
+  console.log(`\n语义去重 (Jaccard ${similarThreshold}): ${kept.length} -> ${merged.length} (合并 ${kept.length - merged.length} 条变体)`);
+  kept.length = 0;
+  kept.push(...merged);
+}
+
+// 更强语义去重: bigram overlap (交集/较短者) >= 阈值, 处理词序变化的松散同义改写
+// (LLM 提炼变体可能词序/措辞大变, Jaccard 低于 0.6 但共享核心词, overlap 能捕获)
+if (overlapThreshold > 0) {
+  const overlap = (a, b) => {
+    const A = store._bigramSet(a), B = store._bigramSet(b);
+    if (!A.size || !B.size) return 0;
+    let inter = 0;
+    for (const t of A) if (B.has(t)) inter++;
+    return inter / Math.min(A.size, B.size);
+  };
+  const groups = [];
+  for (const f of kept) {
+    let placed = false;
+    for (const g of groups) {
+      if (overlap(f.content, g.rep.content) >= overlapThreshold) {
+        g.items.push(f);
+        if ((f.score + f.hits) > (g.rep.score + g.rep.hits)) g.rep = f;
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) groups.push({ rep: f, items: [f] });
+  }
+  const merged = groups.map((g) => {
+    if (g.items.length === 1) return g.rep;
+    const rep = { ...g.rep };
+    rep.hits = g.items.reduce((a, x) => a + (x.hits || 0), 0);
+    rep.score = g.items.reduce((a, x) => Math.max(a, x.score || 0), 0);
+    return rep;
+  });
+  removed += kept.length - merged.length;
+  console.log(`\n语义去重 (overlap ${overlapThreshold}): ${kept.length} -> ${merged.length} (合并 ${kept.length - merged.length} 条变体)`);
   kept.length = 0;
   kept.push(...merged);
 }

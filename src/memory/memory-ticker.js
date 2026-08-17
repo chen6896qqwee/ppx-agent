@@ -80,7 +80,11 @@ ${lines.join("\n")}\n`);
     // P1#9: 若配 LLM 提炼器且本次对话含高信号, 走结构化提炼; 否则退回启发式
     if (this.extractor && _hasSignal(user, assistant)) {
       try {
-        const facts = await this.extractor(String(user || ""), String(assistant || ""));
+        // 感知式提炼: 先检索与本次对话相关的已有记忆 (同主题 top 3), 喂给提炼器从源头去重
+        const related = String(user || "").trim()
+          ? this.factStore.query(user, { limit: 3 }).filter((f) => !(f.hits && f.hits > 5)) // 高命中已稳定, 不再重复提炼
+          : [];
+        const facts = await this.extractor(String(user || ""), String(assistant || ""), related);
         if (facts && facts.length) {
           // similarThreshold=0.6: LLM 提炼的字面变体 (同义不同词) 与已有事实语义相似时命中加分,
           // 防「三件套」这类反复提炼的变体污染记忆库
