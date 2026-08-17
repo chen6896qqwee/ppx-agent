@@ -16,6 +16,7 @@ import { buildCompactionMessages, transcriptToText } from "../memory/compaction.
 import { Lifecycle } from "../ans/lifecycle.js";
 import { valuesPrompt } from "../ans/values.js";
 import { suggestProactive } from "../ans/proactive.js";
+import { SkillLoader } from "../skills/loader.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAX_TOOL_ROUNDS = 8;
@@ -126,6 +127,8 @@ export class PPXAgent {
     this._proactiveTimer = null; // 主动任务生成定时器
     // 生命周期 (ANS 独立模块): born → growing → mature → evolving / reproducing
     this.lifecycle = new Lifecycle();
+    // 方法技能目录 (Superpowers 吸收): 供 _context 注入技能清单, LLM 按需 load_skill
+    try { this.skills = new SkillLoader(path.join(root, "skills")); } catch { this.skills = null; }
 
     // 可选: 启动时自动连接 MCP 服务器 (config.mcp.auto_connect = true 时非阻塞连接)
     if (this.config.mcp?.auto_connect && this.config.mcp.servers?.length) {
@@ -333,6 +336,18 @@ export class PPXAgent {
   // 组装记忆上下文
   // 差异化视角 (_perspective): 多 agent 场景下由委派方注入子 agent 的专属视角,
   // 对抗同质失败 (Anthropic: 同模型+同上下文 → 一个错全错), 生命周期由调用方控制
+  // 方法技能清单注入: 让 LLM 知道有哪些方法论技能可用, 面对任务时主动 load_skill
+  // (Superpowers 吸收: 技能不自动生效, 需要触发才读取全文, 省 token)
+  _skillsPrompt() {
+    try {
+      if (!this.skills) return "";
+      const list = this.skills.list().filter((s) => s && s.description);
+      if (!list.length) return "";
+      return "【可用技能】面对对应任务时用 load_skill 读取全文再执行:\n"
+        + list.map((s) => `- ${s.id}: ${s.description}`).join("\n");
+    } catch { return ""; }
+  }
+
   _context(userMsg) {
     const base = this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context(userMsg) + "\n\n" + this.experience.context() + this._l3Context();
     // 核心价值 (ANS 价值对齐): 注入最前, 独立于 prompt, 不可被后续指令违背
@@ -343,7 +358,8 @@ export class PPXAgent {
     const perspective = this._perspective ? `【任务视角】${this._perspective}` : "";
     const active = this.scenes.activeContext(userMsg || "");
     const baseCtx = active ? base + "\n\n" + active : base;
-    return [values, baseCtx, citation, perspective, extra].filter(Boolean).join("\n\n");
+    const skills = this._skillsPrompt();
+    return [values, baseCtx, skills, citation, perspective, extra].filter(Boolean).join("\n\n");
   }
 
   // 核心价值文本 (委托 ans/values 模块): 数组 → 固定格式注入 (无值时不注入, 向后兼容)

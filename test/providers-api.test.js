@@ -77,6 +77,17 @@ test("providers: validate timeout_ms 边界", () => {
   assert.equal(validateProvider({ id: "x", base_url: "https://x", timeout_ms: 5000 }), null);
 });
 
+test("providers: validate 拦截 REPLACE_WITH_ 占位符", () => {
+  // model 占位符 (如 volcengine 模板残留)
+  const m = validateProvider({ id: "volcengine", base_url: "https://ark.cn-beijing.volces.com/api/v3", model: "REPLACE_WITH_YOUR_ENDPOINT", api_key_env: "VOLCENGINE_API_KEY" });
+  assert.ok(m && /占位符/.test(m), `model 占位符被拦: ${m}`);
+  // base_url / api_key 占位符
+  assert.ok(/占位符/.test(validateProvider({ id: "x", base_url: "https://REPLACE_WITH_HOST/v1" })));
+  assert.ok(/占位符/.test(validateProvider({ id: "x", base_url: "https://x", api_key: "YOUR_API_KEY_HERE" })));
+  // 真实值不误拦
+  assert.equal(validateProvider({ id: "x", base_url: "https://x", model: "deepseek-chat" }), null);
+});
+
 test("providers: sanitize 不回传 api_key 明文", () => {
   const raw = { id: "k", api_key: "sk-secret", api_key_env: "OPENAI_API_KEY", base_url: "https://x" };
   const out = sanitizeProvider(raw);

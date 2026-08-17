@@ -92,10 +92,10 @@ npm run test
 ## 🧠 记忆架构 (L0 → L3)
 
 ```
-对话 → L0 原始对话(JSONL) → L1 原子记忆(高斯衰减) → L2 场景(关键词聚类) → L3 画像(persona)
+对话 → L0 原始对话(session 事件日志) → L1 原子记忆(高斯衰减) → L2 场景(关键词聚类) → L3 画像(persona)
 ```
 
-- **L0**: `data/memory/l0/YYYY-MM-DD.jsonl`, 每日一个文件, 过滤噪音
+- **L0**: 对话原文由会话事件日志 `data/sessions/*.jsonl` 全量承载 (每日派生视图见 `data/memory/daily/`), 过滤噪音
 - **L1**: `facts.json`, score = score × exp(-λt²), 命中加分
 - **L2**: `scenes.json`, 相关记忆聚类成场景
 - **L3**: `user.persona.md` + `agent.persona.md`, 从记忆提炼画像
@@ -121,7 +121,7 @@ ppx-agent/
 │   ├── llm/        LLM 客户端
 │   └── utils/      基础设施
 ├── data/           运行时数据 (不进 git)
-├── test/           测试 (199 项全过 0 失败)
+├── test/           测试 (365 项 362 过 0 失败 3 网络跳过)
 └── docs/           文档
 ```
 

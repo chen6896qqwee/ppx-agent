@@ -78,6 +78,13 @@ export function validateProvider(p) {
   }
   if (p.vision != null && typeof p.vision !== "boolean") return "vision 必须是布尔";
   if (p.timeout_ms != null && (!Number.isFinite(p.timeout_ms) || p.timeout_ms < 1000)) return "timeout_ms 至少 1000ms";
+  // 占位符校验: 模板残留 (如 REPLACE_WITH_YOUR_ENDPOINT) 视为未配置, 避免配了 key 却静默失败
+  for (const field of ["model", "base_url", "api_key"]) {
+    const v = p[field];
+    if (typeof v === "string" && /REPLACE_WITH_|your_?endpoint|your[_-]?api[_-]?key/i.test(v)) {
+      return `${field} 仍是占位符 (${v.slice(0, 40)}), 请替换为真实值`;
+    }
+  }
   return null;
 }
 

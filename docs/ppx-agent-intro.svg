@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 624" width="100%" role="img" font-family="var(--font-sans), system-ui, sans-serif">
+<title>皮皮虾 PPX Agent 介绍</title>
+<desc>皮皮虾 PPX Agent：会自我修复、自我学习的超级智能体。零运行时依赖，纯 Node 原生，四层记忆，33+ 内置工具，7 种编排模式，多 Agent 军团，ANS 神经系统，307 项测试全绿。</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<rect x="548" y="44" width="80" height="22" rx="11" fill="#F5C4B3" stroke="#993C1D" stroke-width="0.5"/>
+<text x="588" y="55" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="500" fill="#4A1B0C">v1.0.0</text>
+
+<text x="40" y="70" font-size="26" font-weight="500"><tspan fill="#4A1B0C">皮皮虾</tspan><tspan fill="#2C2C2A"> PPX Agent</tspan></text>
+<text x="40" y="98" font-size="13" fill="#5F5E5A">会自我修复、自我学习的超级智能体 · 零运行时依赖 · 纯 Node 原生</text>
+
+<circle cx="596" cy="98" r="26" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+<g transform="translate(578, 89) scale(0.82)">
+  <path d="M7 16 L1 12 L6 9 L4 3 L10 8 Z" fill="#D85A30"/>
+  <rect x="9" y="4" width="9" height="10" rx="4" fill="#F0997B"/>
+  <rect x="17" y="3" width="10" height="12" rx="5" fill="#D85A30"/>
+  <path d="M27 3 q7 0 8 6 q1 5 -8 6 Z" fill="#F0997B"/>
+  <circle cx="31" cy="5" r="1.5" fill="#4A1B0C"/>
+  <path d="M33 4 q4 -3 8 -1 M33 7 q4 2 8 4" stroke="#993C1D" stroke-width="1" fill="none"/>
+  <path d="M28 14 q2 5 8 5 q1 4 -7 3" stroke="#993C1D" stroke-width="1.3" fill="#F5C4B3"/>
+</g>
+
+<rect x="40" y="132" width="130" height="36" rx="18" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="105" y="145" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#712B13">0</text>
+<text x="105" y="160" text-anchor="middle" dominant-baseline="central" font-size="11" fill="#5F5E5A">运行时依赖</text>
+<rect x="185" y="132" width="130" height="36" rx="18" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="250" y="145" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#712B13">33+</text>
+<text x="250" y="160" text-anchor="middle" dominant-baseline="central" font-size="11" fill="#5F5E5A">内置工具</text>
+<rect x="330" y="132" width="130" height="36" rx="18" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="395" y="145" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#712B13">7</text>
+<text x="395" y="160" text-anchor="middle" dominant-baseline="central" font-size="11" fill="#5F5E5A">编排模式</text>
+<rect x="475" y="132" width="130" height="36" rx="18" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="540" y="145" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#712B13">307</text>
+<text x="540" y="160" text-anchor="middle" dominant-baseline="central" font-size="11" fill="#5F5E5A">测试全绿</text>
+
+<rect x="40" y="179" width="4" height="14" rx="2" fill="#993C1D"/>
+<text x="52" y="186" dominant-baseline="central" font-size="14" font-weight="500" fill="#444441">系统架构</text>
+<text x="40" y="202" dominant-baseline="central" font-size="11" fill="#5F5E5A">① 接入层 · CLI / HTTP / 飞书 / 微信</text>
+
+<rect x="40" y="212" width="135" height="48" rx="10" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="107" y="231" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#444441">CLI 交互</text>
+<text x="107" y="249" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5F5E5A">readline · /stop 中断</text>
+<rect x="195" y="212" width="135" height="48" rx="10" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="262" y="231" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#444441">HTTP API</text>
+<text x="262" y="249" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5F5E5A">SSE 流式 · Bearer 认证</text>
+<rect x="350" y="212" width="135" height="48" rx="10" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="417" y="231" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#444441">飞书通道</text>
+<text x="417" y="249" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5F5E5A">webhook · 主动推送</text>
+<rect x="505" y="212" width="135" height="48" rx="10" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
+<text x="572" y="231" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#444441">微信通道</text>
+<text x="572" y="249" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5F5E5A">AES 加解密 · 推送</text>
+
+<line x1="107" y1="260" x2="107" y2="280" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+<line x1="262" y1="260" x2="262" y2="280" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+<line x1="417" y1="260" x2="417" y2="280" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+<line x1="572" y1="260" x2="572" y2="280" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+<line x1="107" y1="280" x2="572" y2="280" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+<line x1="340" y1="280" x2="340" y2="310" stroke="#5F5E5A" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="90" y="310" width="500" height="64" rx="12" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+<text x="340" y="331" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#4A1B0C">PPX Agent 核心引擎</text>
+<text x="340" y="351" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#712B13">编排 · 工具循环 · 多模型回退 · 记忆组装</text>
+<rect x="502" y="320" width="76" height="20" rx="10" fill="#993C1D"/>
+<text x="540" y="331" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="500" fill="#FFFFFF">ANS 中枢</text>
+
+<line x1="340" y1="374" x2="340" y2="396" stroke="#5F5E5A" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+<text x="40" y="392" dominant-baseline="central" font-size="11" fill="#5F5E5A">② 能力模块</text>
+<line x1="107" y1="396" x2="572" y2="396" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+<line x1="107" y1="396" x2="107" y2="418" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+<line x1="262" y1="396" x2="262" y2="418" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+<line x1="417" y1="396" x2="417" y2="418" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+<line x1="572" y1="396" x2="572" y2="418" stroke="#B4B2A9" stroke-width="1" fill="none"/>
+
+<rect x="40" y="418" width="135" height="64" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="107" y="437" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#04342C">四层记忆</text>
+<text x="107" y="455" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#085041">L0-L3 · BM25 · 衰减</text>
+<rect x="195" y="418" width="135" height="64" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="262" y="437" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#04342C">工具系统</text>
+<text x="262" y="455" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#085041">33+ 内置 · MCP 动态</text>
+<rect x="350" y="418" width="135" height="64" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="417" y="437" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#04342C">ANS 神经系统</text>
+<text x="417" y="455" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#085041">价值 · 主动 · 生命周期</text>
+<rect x="505" y="418" width="135" height="64" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="572" y="437" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#04342C">自我进化</text>
+<text x="572" y="455" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#085041">失败→经验 · 成功→技能</text>
+
+<rect x="40" y="491" width="4" height="14" rx="2" fill="#993C1D"/>
+<text x="52" y="498" dominant-baseline="central" font-size="14" font-weight="500" fill="#444441">核心能力</text>
+
+<rect x="40" y="510" width="135" height="76" rx="10" fill="#FAECE7" stroke="#F5C4B3" stroke-width="0.5"/>
+<text x="107" y="533" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#4A1B0C">自我修复</text>
+<text x="107" y="551" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#712B13">启动体检 · 崩溃恢复</text>
+<text x="107" y="567" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#712B13">损坏数据自动自愈</text>
+<rect x="195" y="510" width="135" height="76" rx="10" fill="#FAECE7" stroke="#F5C4B3" stroke-width="0.5"/>
+<text x="262" y="533" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#4A1B0C">Agent 军团</text>
+<text x="262" y="551" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#712B13">多进程并行 · DAG 编排</text>
+<text x="262" y="567" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#712B13">广播 · 派发 · 协作</text>
+<rect x="350" y="510" width="135" height="76" rx="10" fill="#FAECE7" stroke="#F5C4B3" stroke-width="0.5"/>
+<text x="417" y="533" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#4A1B0C">多模态读图</text>
+<text x="417" y="551" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#712B13">图片自动注入</text>
+<text x="417" y="567" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#712B13">视觉模型智能路由</text>
+<rect x="505" y="510" width="135" height="76" rx="10" fill="#FAECE7" stroke="#F5C4B3" stroke-width="0.5"/>
+<text x="572" y="533" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#4A1B0C">RAG + OCR</text>
+<text x="572" y="551" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#712B13">文档分块入库</text>
+<text x="572" y="567" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#712B13">扫描件文字识别</text>
+
+<text x="40" y="596" font-size="11" fill="#888780">Apache-2.0 · Node ≥ 20 · 零运行时依赖 · 架构参考 HanaAgent / TencentDB-Agent-Memory / OpenClaw</text>
+</svg>

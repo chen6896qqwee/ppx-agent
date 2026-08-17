@@ -305,3 +305,19 @@ test("审查者只读: readonly 下 run_command 调用被拒", async () => {
   agent.shutdown();
   fs.rmSync(agent.dataDir, { recursive: true, force: true });
 });
+
+// ===== 方法技能自动触发 (Superpowers: 技能清单注入 system prompt) =====
+
+test("方法技能清单注入 system prompt (_skillsPrompt)", () => {
+  // root 指向项目根读 skills/, dataDir 隔离到 tmp (不污染生产数据)
+  const agent = new PPXAgent({ root: path.resolve("."), dataDir: tmp("skillctx") });
+  try {
+    const ctx = agent._context("普通问题");
+    assert.ok(ctx.includes("【可用技能】"), `技能清单注入, 实际: ${ctx.slice(0, 300)}`);
+    assert.ok(ctx.includes("load_skill"), "提示按需加载");
+    assert.ok(ctx.includes("brainstorm") && ctx.includes("verify"), "含方法论技能 (Superpowers)");
+  } finally {
+    agent.shutdown();
+    fs.rmSync(agent.dataDir, { recursive: true, force: true });
+  }
+});
