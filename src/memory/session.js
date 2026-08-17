@@ -15,6 +15,7 @@ export const EVENTS = {
   SYSTEM: "system",
   TOOL_CALL: "tool/call",
   TOOL_RESULT: "tool/result",
+  COMPACTION: "compaction/summary",
 };
 
 export class SessionStore {
@@ -72,6 +73,26 @@ export class SessionStore {
     return this._log(this._safe(key))
       .filter((e) => e.type === EVENTS.USER || e.type === EVENTS.ASSISTANT)
       .map((e) => ({ role: e.type === EVENTS.USER ? "user" : "assistant", content: e.data?.content }));
+  }
+
+  // 投影「压缩后」的模型可见历史: 最后一条 compaction 事件之前 (seq <= upToSeq) 的消息被摘要替换
+  // 吸收 OpenClaw compaction: 摘要作为单一 surface node 替换被压缩区间, 日志本身不可变
+  deriveCompacted(key) {
+    const events = this._log(this._safe(key));
+    let lastComp = null;
+    for (const e of events) if (e.type === EVENTS.COMPACTION) lastComp = e;
+    const upToSeq = lastComp?.data?.upToSeq || 0;
+    const msgs = [];
+    if (lastComp?.data?.summary) {
+      msgs.push({ role: "system", content: String(lastComp.data.summary) });
+    }
+    for (const e of events) {
+      if (e.seq <= upToSeq) continue;
+      if (e.type === EVENTS.USER || e.type === EVENTS.ASSISTANT) {
+        msgs.push({ role: e.type === EVENTS.USER ? "user" : "assistant", content: e.data?.content });
+      }
+    }
+    return msgs;
   }
 
   // 完整事件流 (回放/审计/轨迹)

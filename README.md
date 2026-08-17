@@ -40,13 +40,12 @@
 | ✅ **OpenClaw 底座** | LLM 引擎通过 `openclaw agent` CLI 驱动 OpenClaw (另有 dsh / http 后端), 围栏协议代理工具, 保留多 provider 回退 |
 | ✅ **多模型 API 优先** | OpenAI/DeepSeek/火山/通义 + 本地模型兜底 |
 
-## OpenClaw 底座
+## 独立底座
 
-皮皮虾的 **LLM 底座已换成 OpenClaw 引擎**：`src/llm/client.js` 新增 `openclaw` 后端，`chat()` 通过 `openclaw agent --message-file --json` CLI 驱动本机 OpenClaw 引擎作答（写临时 UTF-8 文件避免中文编码坑），并解析 `result.payloads[].text` 取回复。
+皮皮虾是**独立自包含的 agent**：默认用 `src/llm/client.js` 的 `http` 后端**直连 OpenAI 兼容 API**（OpenAI/DeepSeek/火山/通义/本地），不再依赖任何外部引擎 CLI。多 provider 自动回退 + 瞬态错误重试。
 
-- 引擎：已安装的 OpenClaw（default provider 内部走火山 ark-code-latest）
-- 回退：OpenClaw 失败时自动切 volcengine / deepseek / dashscope / 本地模型
-- 配置：`config/ppx.json` 的 `providers[0]`（`backend: "openclaw"`），`mjs` 填 openclaw 可执行路径，`session_key` 默认 `ppx:main`
+- 默认：http 直连（config `providers[0]` 起按顺序回退，配 API key 即可跑）
+- 可选引擎：`openclaw` / `dsh` 后端代码保留（`backend: "openclaw"` / `"deepseek"`），需自行在 config 加 provider 或用环境变量 `PPX_OPENCLAW_MJS` / `PPX_DSH_ROOT` 指定引擎位置
 - 保留：皮皮虾四层记忆 / 自愈 / 方法Skill / 工具 / web 壳 全部保留
 
 ## 🚀 快速开始

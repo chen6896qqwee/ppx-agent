@@ -24,6 +24,11 @@ export function normalizeMeta(def = {}) {
     idempotent: !!def.idempotent,            // 是否可安全重试
     enabled: def.enabled !== false,          // 默认启用
     execute: def.execute,
+    // 工具钩子链 (吸收 OpenClaw before/after 钩子):
+    //  before(args, ctx) -> undefined 继续 | 字符串短路 | throw 拒绝
+    //  after(args, result, ctx) -> 后处理(结果审计/清理), 错误不阻塞
+    before: typeof def.before === "function" ? def.before : null,
+    after: typeof def.after === "function" ? def.after : null,
   };
 }
 
@@ -45,6 +50,17 @@ export async function runWithPolicy(meta, args, ctx = {}) {
   if (typeof fn !== "function") {
     return `${TOOL_ERROR_PREFIX} ${meta.name}: 无实现(Provider 缺失)`;
   }
+  // before 钩子: 返回非 undefined 则短路(不执行), throw 则拒绝
+  if (meta.before) {
+    try {
+      const shortCircuit = await meta.before(args, ctx);
+      if (shortCircuit !== undefined && shortCircuit !== null) {
+        return typeof shortCircuit === "string" ? shortCircuit : JSON.stringify(shortCircuit);
+      }
+    } catch (e) {
+      return `${TOOL_ERROR_PREFIX} ${meta.name}: before 钩子拒绝: ${e.message}`;
+    }
+  }
   let timer = null;
   let timedOut = false;
   const ctrl = new AbortController();
@@ -57,6 +73,9 @@ export async function runWithPolicy(meta, args, ctx = {}) {
       ? await fn(args, { ...ctx, signal: ctrl.signal })
       : await fn(args);
     if (timedOut) return `${TOOL_ERROR_PREFIX} ${meta.name}: 超时`;
+    if (meta.after) {
+      try { await meta.after(args, result, ctx); } catch { /* after 钩子错误不阻塞 */ }
+    }
     if (typeof ctx.onResult === "function") ctx.onResult(meta.name, "ok", null);
     return typeof result === "string" ? result : JSON.stringify(result);
   } catch (e) {

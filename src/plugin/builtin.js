@@ -12,6 +12,7 @@ import {
   registerMethodTools, registerSelfmodTools, registerCustomTools, registerDocumentTools,
 } from "../tools/index.js";
 import { embedderFromConfig } from "../llm/embedder.js";
+import { LocalShellProvider } from "../seam/shell.js";
 import { Traces } from "../utils/trace.js";
 import { ModeRegistry, registerDefaultModes } from "../mode/index.js";
 import { planExecExecutor } from "../mode/plan-exec.js";
@@ -114,6 +115,8 @@ export const toolsPlugin = (ctx) => {
   // 向量化: 配了 config.embedding 则自动注入 embedder, 检索切 dense+BM25 RRF; 否则纯 BM25 兜底
   const embedder = embedderFromConfig(config);
   if (embedder) facts.setEmbedder(embedder);
+  // Shell 能力 seam: 命令执行解耦为可替换 provider (本地/未来沙箱/Docker)
+  ctx.provide("shell", new LocalShellProvider());
   ctx.provide("tools", tools);
   ctx.provide("toolsEnabled", config.tools?.enabled !== false);
 };

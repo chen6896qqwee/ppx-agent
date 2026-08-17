@@ -6,8 +6,12 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { scrubPII } from "../utils/pii.js";
+import { LocalShellProvider } from "../seam/shell.js";
 
 const execFileP = promisify(execFile);
+
+// 默认 shell provider (未通过 seam 注入时的兜底, 供测试/独立工具目录使用)
+const defaultShell = new LocalShellProvider();
 
 // 图片 MIME 表 (read_image + 多模态注入共用)
 const IMAGE_MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp" };
@@ -190,17 +194,12 @@ export function registerBuiltinTools(catalog, { rootDir, facts, memory }) {
       if (!isAllowedCommand(cmd, opts)) {
         return JSON.stringify({ error: "命令不在白名单: " + cmd.split(/[\s|&;>]+/)[0] + ". 允许: git/npm/node/python/cat/cp/mkdir 等, 或设置 security.allow_all." });
       }
-      try {
-        const isWin = process.platform === "win32";
-        const { stdout, stderr } = await execFileP(isWin ? "cmd.exe" : "/bin/sh", [
-          isWin ? "/c" : "-c",
-          cmd,
-        ], { cwd: rootDir, timeout: 30000, maxBuffer: 1024 * 1024 });
-        const out = (stdout || "") + (stderr ? "\n[stderr] " + stderr : "");
-        return scrubPII(out).cleaned.slice(0, 20000) || "(无输出)";
-      } catch (e) {
-        return JSON.stringify({ error: e.message, code: e.code });
-      }
+      // 通过 shell seam 调用 (可替换 provider: 本地/沙箱/Docker), 换 provider 即换执行环境
+      const shell = (ctx?.agent?.ctx && ctx.agent.ctx.consume("shell")) || defaultShell;
+      const r = await shell.exec(cmd, { cwd: rootDir, timeoutMs: opts.command_timeout_ms || 30000 });
+      if (!r.ok) return JSON.stringify({ error: r.stderr, code: r.code });
+      const out = r.stdout + (r.stderr ? "\n[stderr] " + r.stderr : "");
+      return scrubPII(out).cleaned.slice(0, 20000) || "(无输出)";
     },
   });
 

@@ -7,10 +7,11 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { info, warn, error } from "../utils/logger.js";
-import { buildFencePrompt, proxyToolLoop } from "./fence.js";
+import { buildFencePrompt, proxyToolLoop, parseToolCalls } from "./fence.js";
+import { withRetry } from "./retry.js";
 
-const DEFAULT_DSH_ROOT = process.env.PPX_DSH_ROOT || "C:/Users/chen/Desktop/deepseek-harness";
-const DEFAULT_MJS = process.env.PPX_OPENCLAW_MJS || "C:/Users/chen/AppData/Roaming/npm/node_modules/openclaw/openclaw.mjs";
+const DEFAULT_DSH_ROOT = process.env.PPX_DSH_ROOT || "";
+const DEFAULT_MJS = process.env.PPX_OPENCLAW_MJS || "";
 
 // 纯函数: 校验 Node 版本是否满足 OpenClaw 引擎要求 (>=22.22.3 / >=24.15 / >=25.9, 且 23 与 24.0-24.14 不支持)
 export function nodeVersionOk(version) {
@@ -39,6 +40,7 @@ export class LLMClient {
     this.model = provider.model || provider.models?.chat || "gpt-4o-mini";
     this.vision = !!provider.vision; // 是否支持多模态 (视觉) — 标记后才会注入图片到 user 消息
     this.timeoutMs = provider.timeout_ms || 120000;
+    this.retryMax = provider.retry_max ?? 3; // 单次调用内瞬态错误重试次数 (429/5xx/timeout)
     // openclaw 后端专用
     this.mjs = provider.mjs || DEFAULT_MJS;
     this.sessionKey = provider.session_key || "ppx:main";
@@ -191,11 +193,26 @@ export class LLMClient {
     const data = await this._request("/chat/completions", body);
     const message = data?.choices?.[0]?.message;
     if (!message) throw new Error("LLM 返回空 message");
+    let toolCalls = message.tool_calls || null;
+    let content = message.content || null;
+    // 纯文本工具调用修复 (吸收 OpenClaw tool-call-repair):
+    // 部分模型(本地/DSML)返回文本工具意图而非原生 tool_calls, 从文本恢复
+    if (tools.length && (!toolCalls || !toolCalls.length) && typeof content === "string" && content) {
+      const parsed = parseToolCalls(content);
+      if (parsed.calls.length) {
+        toolCalls = parsed.calls.map((c) => ({
+          id: c.id,
+          type: "function",
+          function: { name: c.function.name, arguments: c.function.arguments },
+        }));
+        content = parsed.clean || null;
+      }
+    }
     return {
       message: {
         role: message.role || "assistant",
-        content: message.content || null,
-        tool_calls: message.tool_calls || null,
+        content,
+        tool_calls: toolCalls,
       },
       usage: data?.usage,
     };
@@ -273,23 +290,29 @@ export class LLMClient {
   async _request(path, jsonBody) {
     if (!this.apiKey) throw new Error(`LLMClient: 缺少 API key (env=${this.apiKeyEnv() || "?"})`);
     const url = `${this.baseUrl}${path}`;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
-    try {
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.apiKey}` },
-        body: JSON.stringify(jsonBody),
-        signal: ctrl.signal,
-      });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        throw new Error(`LLM HTTP ${resp.status}: ${text.slice(0, 300)}`);
+    const doFetch = async () => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.apiKey}` },
+          body: JSON.stringify(jsonBody),
+          signal: ctrl.signal,
+        });
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          const e = new Error(`LLM HTTP ${resp.status}: ${text.slice(0, 300)}`);
+          e.status = resp.status; // 结构化状态码, 供 retry.isTransientError 分类
+          throw e;
+        }
+        return await resp.json();
+      } finally {
+        clearTimeout(timer);
       }
-      return await resp.json();
-    } finally {
-      clearTimeout(timer);
-    }
+    };
+    // 瞬态错误(429/5xx/timeout)单次调用内重试, 非瞬态(400/401/403)立即抛给上层 provider 回退
+    return withRetry(doFetch, { maxRetries: this.retryMax });
   }
 
   // 是否支持逐字流式: 仅直连 HTTP API 后端 (openclaw/deepseek 为外部进程, 一次性返回) [复审 P2]
@@ -309,6 +332,9 @@ export class LLMClient {
     if (!nodeVersionOk(process.versions.node)) {
       throw new Error("[皮皮虾] 当前 Node v" + process.versions.node + " 不满足 OpenClaw 引擎要求。\n请升级 Node 至 >=22.22.3 (推荐 26.x)；注意 Node 23 与 24.0-24.14 不支持。\n或改用 http 后端配置 API key 直连。");
     }
+    if (!this.mjs || !fs.existsSync(this.mjs)) {
+      throw new Error("[皮皮虾] OpenClaw 引擎未就绪: mjs 路径不存在 (" + this.mjs + ")。\n请设置环境变量 PPX_OPENCLAW_MJS 指向 openclaw.mjs，或在 config/ppx.json 的 openclaw provider 里填 mjs 字段。");
+    }
   }
 
   // 翻译 openclaw CLI 的版本类报错为中文引导
@@ -324,8 +350,11 @@ export class LLMClient {
   // http 后端: 快速探测 /models (3s 超时), 不发完整请求
   async health() {
     if (this.backend === "openclaw") {
-      const ok = nodeVersionOk(process.versions.node);
-      if (!ok) info("[health] openclaw 不可用: Node v" + process.versions.node + " 不满足引擎要求");
+      const okNode = nodeVersionOk(process.versions.node);
+      const okMjs = !!this.mjs && fs.existsSync(this.mjs);
+      const ok = okNode && okMjs;
+      if (!okNode) info("[health] openclaw 不可用: Node v" + process.versions.node + " 不满足引擎要求");
+      if (okNode && !okMjs) info("[health] openclaw 不可用: mjs 路径不存在 (" + this.mjs + ")，请设置 PPX_OPENCLAW_MJS");
       return ok;
     }
     if (this.backend === "deepseek") {

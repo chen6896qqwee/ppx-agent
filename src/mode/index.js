@@ -27,9 +27,9 @@ export class ModeRegistry {
 }
 
 // 组装 [system + 历史 + 当前] 消息 (含防重复), 供各 executor 复用
-export function buildMessages(agent, userMsg, sessionKey = "default") {
+export async function buildMessages(agent, userMsg, sessionKey = "default") {
   const system = agent._context(userMsg);
-  const history = agent._loadHistory(sessionKey);
+  const history = await agent._loadHistory(sessionKey);
   const messages = [{ role: "system", content: system }, ...history];
   const hist = agent._getSession(sessionKey);
   const isRepeat = hist[hist.length - 1]?.role === "user" && hist[hist.length - 1].content === String(userMsg);
@@ -44,14 +44,14 @@ async function reactExecutor(agent, userMsg, { sessionKey = "default" } = {}) {
   if (!agent.llm) {
     return (await agent._offlineToolRoute(userMsg)) || "[皮皮虾] 未配置模型 provider，仅本地记忆 + 工具模式。";
   }
-  const messages = buildMessages(agent, userMsg, sessionKey);
+  const messages = await buildMessages(agent, userMsg, sessionKey);
   return agent._llmWithFallback(messages);
 }
 
 // 单Agent: 纯 LLM 对话, 不挂工具 (省 token, 适合纯问答/闲聊)
 async function singleExecutor(agent, userMsg, { sessionKey = "default" } = {}) {
   if (!agent.llm) return "[皮皮虾] 未配置模型 provider。";
-  const messages = buildMessages(agent, userMsg, sessionKey);
+  const messages = await buildMessages(agent, userMsg, sessionKey);
   const r = await agent.llm.chat(messages);
   return r.content;
 }

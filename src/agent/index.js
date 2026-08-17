@@ -11,6 +11,7 @@ import { info, warn, error } from "../utils/logger.js";
 import { Context, compose, loadPlugins } from "../plugin/index.js";
 import { builtinPlugins } from "../plugin/builtin.js";
 import { registerMcpTools } from "../mcp/index.js";
+import { buildCompactionMessages, transcriptToText } from "../memory/compaction.js";
 
 // 热重载用 LLM 客户端构造 (与 plugin/builtin.llmPlugin 行为一致)
 const LLMClientForReload = LLMClient;
@@ -248,7 +249,7 @@ export class PPXAgent {
   }
 
   _getSession(sessionKey) {
-    return this._trimHistory(this.sessionStore.deriveMessages(sessionKey || "default"));
+    return this._trimHistory(this.sessionStore.deriveCompacted(sessionKey || "default"));
   }
 
   // 追加一轮对话为不可变事件 (append-only, 永不重写日志)
@@ -258,8 +259,37 @@ export class PPXAgent {
     if (assistant) this.sessionStore.append(k, "assistant/message", { content: String(assistant) });
   }
 
-  _loadHistory(sessionKey) {
-    return this._getSession(sessionKey).map((m) => ({ ...m }));
+  // 加载历史: 先尝试结构化压缩(超阈值), 再按预算裁剪
+  async _loadHistory(sessionKey) {
+    const k = sessionKey || "default";
+    await this._maybeCompact(k);
+    return this._getSession(k).map((m) => ({ ...m }));
+  }
+
+  // 会话压缩: 未压缩部分超 token 阈值时, 把最旧一半压成结构化摘要并持久化到日志
+  // (吸收 OpenClaw compaction: 摘要替换被压缩区间, 日志本身不可变)
+  async _maybeCompact(sessionKey) {
+    if (!this.llm) return;
+    const events = this.sessionStore.replay(sessionKey);
+    let upToSeq = 0;
+    for (const e of events) if (e.type === "compaction/summary") upToSeq = e.data?.upToSeq || 0;
+    const tail = events.filter((e) => e.seq > upToSeq && (e.type === "user/message" || e.type === "assistant/message"));
+    if (!tail.length) return;
+    const tokenBudget = Number(this.config.memory?.history_token_budget) || 4000;
+    const total = tail.reduce((a, e) => a + estimateTokens(e.data?.content), 0);
+    if (total <= tokenBudget * 1.5) return; // 未超阈值不压缩
+    const split = Math.floor(tail.length / 2);
+    const old = tail.slice(0, split);
+    if (old.length < 2) return; // 太少不值得压
+    const lastSeq = old[old.length - 1].seq;
+    const transcript = transcriptToText(old.map((e) => ({ role: e.type === "user/message" ? "user" : "assistant", content: e.data?.content })));
+    try {
+      const r = await this.llm.chat(buildCompactionMessages(transcript));
+      const summary = r?.content;
+      if (summary) this.sessionStore.append(sessionKey, "compaction/summary", { summary, upToSeq: lastSeq });
+    } catch {
+      // 压缩失败静默降级, 交给 _trimHistory 硬裁剪
+    }
   }
 
   // 重置某会话历史 (新会话): 删除事件日志
@@ -358,7 +388,7 @@ export class PPXAgent {
     const local = (this.config.agent?.localIntent !== false) ? await this._localIntent(userMsg) : null;
     if (local) { onDelta && onDelta(local); return local; }
     const system = this._context(userMsg);
-    const history = this._loadHistory(sessionKey);
+    const history = await this._loadHistory(sessionKey);
     const messages = [{ role: "system", content: system }, ...history, { role: "user", content: this._userContent(userMsg) }];
 
     // 多模态路由: 消息含图片时优先 vision provider (否则图片发到文本后端无意义)

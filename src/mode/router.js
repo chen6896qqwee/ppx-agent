@@ -34,7 +34,7 @@ export async function routerExecutor(agent, userMsg, { sessionKey = "default" } 
   // 2. 注入技能内容到 system prompt, 再执行 (场景上下文已由 agent._context 注入)
   const system = agent._context(userMsg)
     + (skill ? `\n\n[已激活技能: ${skill.name}]\n${loader.read(skill.id)}` : "");
-  const history = agent._loadHistory(sessionKey);
+  const history = await agent._loadHistory(sessionKey);
   const messages = [{ role: "system", content: system }, ...history, { role: "user", content: String(userMsg) }];
   return agent._llmWithFallback(messages);
 }

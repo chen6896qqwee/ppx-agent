@@ -32,11 +32,11 @@ export async function planExecExecutor(agent, userMsg, { sessionKey = "default",
   const steps = (await planSteps(agent, userMsg)).slice(0, maxSteps);
   if (!steps.length) {
     // 规划失败: 退回 react 模式
-    const messages = buildMessages(agent, userMsg, sessionKey);
+    const messages = await buildMessages(agent, userMsg, sessionKey);
     return agent._llmWithFallback(messages);
   }
   // 2. 逐步执行 (每步走工具循环)
-  const base = buildMessages(agent, userMsg, sessionKey);
+  const base = await buildMessages(agent, userMsg, sessionKey);
   const results = [];
   for (let i = 0; i < steps.length; i++) {
     const stepMsg = [...base, { role: "user", content: `[第 ${i + 1}/${steps.length} 步] ${steps[i]}` }];

@@ -8,10 +8,21 @@
     "node": ">=22.22.3 <23 || >=24.15 <25 || >=25.9"
   },
   "main": "src/agent/index.js",
+  "bin": {
+    "ppx": "src/cli.js",
+    "ppx-serve": "src/server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chen6896qqwee/ppx-agent.git"
+  },
   "scripts": {
     "start": "node src/agent/index.js",
     "chat": "node src/cli.js",
+    "serve": "node src/server.js",
     "selfheal": "node src/selfheal/run.js",
+    "web": "node scripts/start-web.js",
+    "web:build": "npm run build --prefix web",
     "test": "node --test"
   },
   "keywords": [

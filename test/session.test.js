@@ -8,7 +8,7 @@ import { PPXAgent } from "../src/agent/index.js";
 
 function tmpRoot(n){ return fs.mkdtempSync(path.join(os.tmpdir(), `ppx-${n}-`)); }
 
-test("会话写入后可跨实例恢复 (持久化)", () => {
+test("会话写入后可跨实例恢复 (持久化)", async () => {
   const root = tmpRoot("ses");
   const a = new PPXAgent({ root });
   a._pushTurn("k1", "你好", "在的兄弟");
@@ -18,7 +18,7 @@ test("会话写入后可跨实例恢复 (持久化)", () => {
 
   // 模拟重启: 新 agent 同 root
   const b = new PPXAgent({ root });
-  const hist = b._loadHistory("k1");
+  const hist = await b._loadHistory("k1");
   assert.ok(hist.length >= 4, "恢复 4 条, got " + hist.length);
   assert.ok(hist.some((m) => m.content === "记住"), "内容正确");
   b.shutdown();
@@ -74,11 +74,11 @@ test("会话事件日志: fork 从边界派生新会话, 源不可变", () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("代理 _pushTurn 写事件日志, 历史含 assistant", () => {
+test("代理 _pushTurn 写事件日志, 历史含 assistant", async () => {
   const root = tmpRoot("push");
   const a = new PPXAgent({ root });
   a._pushTurn("k", "问", "答");
   assert.equal(a.sessionStore.count("k"), 2, "2 条事件");
-  assert.equal(a._loadHistory("k").length, 2, "投影 2 条");
+  assert.equal((await a._loadHistory("k")).length, 2, "投影 2 条");
   a.shutdown();
 });

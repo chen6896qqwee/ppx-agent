@@ -20,11 +20,11 @@ export async function graphExecutor(agent, userMsg, { sessionKey = "default", wo
   const raw = workflow || (agent.config.agent && agent.config.agent.workflow) || [userMsg];
   const nodes = normalizeNodes(raw);
   if (!nodes.length) {
-    const messages = buildMessages(agent, userMsg, sessionKey);
+    const messages = await buildMessages(agent, userMsg, sessionKey);
     return agent._llmWithFallback(messages);
   }
 
-  const base = buildMessages(agent, userMsg, sessionKey);
+  const base = await buildMessages(agent, userMsg, sessionKey);
   const results = [];
   for (const node of nodes) {
     let r;
