@@ -44,6 +44,7 @@ export const DEFAULT_CONFIG = {
     max_history_items: 40,          // 会话历史条数上限 (信息量感知裁剪)
     history_token_budget: 4000,     // 会话历史 token 预算
     max_facts: 1000,                // L1 原子记忆总量上限 (防膨胀, 超限裁剪最弱)
+    session_max_age_days: 30,       // 会话日志保留天数 (启动时清理过期会话, 0=不清理)
   },
   experience: { enabled: true },
   selfheal: { enabled: true, check_interval_ms: 60000, max_restart_attempts: 3 },

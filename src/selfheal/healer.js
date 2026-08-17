@@ -119,6 +119,32 @@ walk(this.dataDir);
     if (removed.length) info("selfheal: 清理旧手动备份目录 " + removed.length + " 个: " + removed.join(", "));
     return removed;
   }
+
+  // 清理历史 .bak-* 文件 (去重/迁移等一次性工具留下的手动备份): 保留最近 N 个, 更早自动删除 (默认保留 2)
+  // 覆盖 facts.json.bak-* / lessons.json.bak-* 等, 防手动备份文件在 data/ 内无限累积
+  cleanupStaleBakFiles(keep = 2) {
+    if (!fs.existsSync(this.dataDir)) return [];
+    const files = [];
+    const walk = (d) => {
+      if (!fs.existsSync(d)) return;
+      for (const f of fs.readdirSync(d)) {
+        const p = path.join(d, f);
+        let st;
+        try { st = fs.statSync(p); } catch { continue; }
+        if (st.isDirectory()) walk(p);
+        else if (f.includes(".bak-") && !f.endsWith(".lock")) files.push({ p, mtime: st.mtimeMs });
+      }
+    };
+    walk(this.dataDir);
+    files.sort((a, b) => b.mtime - a.mtime);
+    const removed = [];
+    for (const f of files.slice(keep)) {
+      try { fs.unlinkSync(f.p); removed.push(path.basename(f.p)); }
+      catch (e) { warn("cleanup stale bak file failed: " + f.p + ": " + e.message); }
+    }
+    if (removed.length) info("selfheal: 清理旧 .bak-* 备份文件 " + removed.length + " 个: " + removed.join(", "));
+    return removed;
+  }
   
   // 完整自愈入口
   heal() {
@@ -128,7 +154,9 @@ walk(this.dataDir);
     const cleanedCorrupt = this.cleanupCorruptBackups(2);
     // 清理历史手动备份目录 (保留最近 2 个)
     const cleanedBackupDirs = this.cleanupStaleBackupDirs(2);
-    const report = { fixes, crashed: crash.crashed, crashDetail: crash.detail, cleanedCorrupt, cleanedBackupDirs };
+    // 清理历史 .bak-* 文件 (保留最近 2 个)
+    const cleanedBakFiles = this.cleanupStaleBakFiles(2);
+    const report = { fixes, crashed: crash.crashed, crashDetail: crash.detail, cleanedCorrupt, cleanedBackupDirs, cleanedBakFiles };
     if (fixes.length) info(`selfheal: 修复 ${fixes.length} 项: ${fixes.join("; ")}`);
     else info("selfheal: 无异常");
     if (crash.crashed) warn(`selfheal: 检测到崩溃残留 -> ${crash.detail}`);

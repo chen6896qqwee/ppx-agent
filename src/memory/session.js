@@ -179,6 +179,24 @@ export class SessionStore {
     try { fs.rmSync(this._file(k), { force: true }); } catch {}
   }
 
+  // 清理过期会话: 删除超过 maxAgeDays 天未活跃的非 default 会话文件
+  // 返回删除的会话 key 列表。default 主会话始终保留 (防误删主对话历史)
+  pruneOld({ maxAgeDays = 30, keep = [] } = {}) {
+    const now = Date.now();
+    const cutoff = now - maxAgeDays * 86400000;
+    const keepSet = new Set([...keep, "default"].map((k) => this._safe(k)));
+    const removed = [];
+    for (const [key, events] of this._logs) {
+      if (keepSet.has(key)) continue;
+      const lastTs = events.length ? events[events.length - 1].ts : 0;
+      if (!lastTs || lastTs < cutoff) {
+        this.delete(key);
+        removed.push(key);
+      }
+    }
+    return removed;
+  }
+
   // 增量落盘: 只追加 flushedSeq 之后的新事件 (P1#5, 消除大会话全量重写)
   _flush(key) {
     const k = this._safe(key);

@@ -1,7 +1,7 @@
 // src/memory/fact-store.js - 记忆存储 (高斯衰减遗忘)
 // 架构参考 openhanako: 每条记忆有 importance, 高斯衰减, 命中加分
 import path from "node:path";
-import { ensureDir, readJson, writeJson, nowISO, logicalDay } from "../utils/store.js";
+import { ensureDir, readJson, writeJson, nowISO, logicalDay, withFileLock } from "../utils/store.js";
 
 // 记忆动词前缀: 去重时剔除, 让"记住：X"与"X"视为同一条 (防 LLM 提炼版与原文冗余)
 const MEMORY_VERB_PREFIXES = [
@@ -65,51 +65,58 @@ export class FactStore {
   add(content, { importance = this.opts.baseImportance, type = "general", source = "manual", dedupe = true, scope = null, meta = null, similarThreshold = 0 } = {}) {
     const norm = this._norm(content);
     if (!norm) return null;
-    const now = nowISO();
-    if (dedupe) {
-      // 内容去重: 归一化后相同 (含"记住："等前缀差异) 已存在则命中加分, 不新增
-      const normKey = this._normKey(content);
-      const existing = this.facts.find((f) => this._normKey(f.content) === normKey);
-      if (existing) {
-        existing.hits += 1;
-        existing.lastAccess = now;
-        existing.score += this.opts.hitBonus;
-        this.save();
-        return existing;
-      }
-      // 语义相似去重: similarThreshold>0 时, 与现有事实 bigram Jaccard 相似度达标则命中加分
-      // 解决 LLM 提炼变体 (字面不同但语义相同) 反复入库的冗余问题
-      if (similarThreshold > 0) {
-        const similar = this.findSimilar(norm, { threshold: similarThreshold, scope });
-        if (similar) {
-          similar.hits += 1;
-          similar.lastAccess = now;
-          similar.score += this.opts.hitBonus;
+    // 跨进程/多 agent 共享 dataDir 时的写保护: 锁内读-改-写, 防并发覆盖丢更新 (与 Experience 对称)
+    // add 是唯一写入口, 锁内重读磁盘最新 facts (防基于过期内存操作), 操作后落盘
+    return withFileLock(this.file, () => {
+      // 锁内重读: 拿最新磁盘状态再操作 (多进程共享 dataDir 时不丢别的进程刚写入的事实)
+      this.facts = readJson(this.file, []);
+      this.rebuildIndex();
+      const now = nowISO();
+      if (dedupe) {
+        // 内容去重: 归一化后相同 (含"记住："等前缀差异) 已存在则命中加分, 不新增
+        const normKey = this._normKey(content);
+        const existing = this.facts.find((f) => this._normKey(f.content) === normKey);
+        if (existing) {
+          existing.hits += 1;
+          existing.lastAccess = now;
+          existing.score += this.opts.hitBonus;
           this.save();
-          return similar;
+          return existing;
+        }
+        // 语义相似去重: similarThreshold>0 时, 与现有事实 bigram Jaccard 相似度达标则命中加分
+        // 解决 LLM 提炼变体 (字面不同但语义相同) 反复入库的冗余问题
+        if (similarThreshold > 0) {
+          const similar = this.findSimilar(norm, { threshold: similarThreshold, scope });
+          if (similar) {
+            similar.hits += 1;
+            similar.lastAccess = now;
+            similar.score += this.opts.hitBonus;
+            this.save();
+            return similar;
+          }
         }
       }
-    }
-    const fact = {
-      id: cryptoRandomId(),
-      content: norm,
-      type,
-      source,
-      importance,
-      score: importance,
-      created: now,
-      lastAccess: now,
-      hits: 0,
-      scope,
-      ...(meta ? { meta } : {}),
-    };
-    this.facts.push(fact);
-    this._indexFact(fact);
-    this._statsCache.clear(); // 新增事实 -> 作用域统计失效
-    // 总量裁剪: 超 maxFacts 时删除最弱事实 (防记忆膨胀); 未裁剪时正常落盘
-    const pruned = this._prune();
-    if (!pruned) this.save();
-    return fact;
+      const fact = {
+        id: cryptoRandomId(),
+        content: norm,
+        type,
+        source,
+        importance,
+        score: importance,
+        created: now,
+        lastAccess: now,
+        hits: 0,
+        scope,
+        ...(meta ? { meta } : {}),
+      };
+      this.facts.push(fact);
+      this._indexFact(fact);
+      this._statsCache.clear(); // 新增事实 -> 作用域统计失效
+      // 总量裁剪: 超 maxFacts 时删除最弱事实 (防记忆膨胀); 未裁剪时正常落盘
+      const pruned = this._prune();
+      if (!pruned) this.save();
+      return fact;
+    });
   }
 
   // L1 总量裁剪: 超 maxFacts 时, 按「衰减后有效分 × 重要性」排序, 删除最弱事实。
@@ -353,12 +360,17 @@ export class FactStore {
   }
 
   hit(id) {
-    const f = this.facts.find((x) => x.id === id);
-    if (!f) return;
-    f.hits += 1;
-    f.lastAccess = nowISO();
-    f.score += this.opts.hitBonus;
-    this.save();
+    return withFileLock(this.file, () => {
+      this.facts = readJson(this.file, []);
+      this.rebuildIndex();
+      const f = this.facts.find((x) => x.id === id);
+      if (!f) return;
+      f.hits += 1;
+      f.lastAccess = nowISO();
+      f.score += this.opts.hitBonus;
+      this.save();
+      return f;
+    });
   }
 
   addMemory(message) {

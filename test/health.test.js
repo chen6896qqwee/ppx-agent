@@ -5,6 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { LLMClient, nodeVersionOk } from "../src/llm/client.js";
 
+// 网络 gate: 无 PPX_NET_TEST=1 时跳过真实探测 (与项目其他网络测试一致, 防无外网环境等超时)
+const NET = process.env.PPX_NET_TEST === "1";
+
 test("nodeVersionOk: 支持/不支持版本矩阵", () => {
   assert.equal(nodeVersionOk("22.22.2"), false);
   assert.equal(nodeVersionOk("22.22.3"), true);
@@ -34,7 +37,7 @@ test("LLMClient.health: http 后端无 key 返回 false", async () => {
   assert.equal(h, false, "无 API key 不可用");
 });
 
-test("LLMClient.health: http 后端有 key 时探测 /models", async () => {
+test("LLMClient.health: http 后端有 key 时探测 /models", { skip: !NET, timeout: 20000 }, async () => {
   const c = new LLMClient({ id: "http", base_url: "https://api.openai.com/v1", api_key: "sk-test" });
   const h = await c.health();
   assert.equal(typeof h, "boolean");

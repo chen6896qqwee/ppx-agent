@@ -68,7 +68,15 @@ export const experiencePlugin = (ctx) => {
 };
 
 export const sessionPlugin = (ctx) => {
-  ctx.provide("sessions", new SessionStore(ctx.consume("dataDir")));
+  const config = ctx.consume("config");
+  const sessions = new SessionStore(ctx.consume("dataDir"));
+  // 启动时清理过期会话 (config.memory.session_max_age_days, 默认 30; 0/负=不清理)
+  const maxAge = Number(config.memory?.session_max_age_days ?? 30);
+  if (maxAge > 0) {
+    const removed = sessions.pruneOld({ maxAgeDays: maxAge });
+    if (removed.length) info(`[sessions] 清理过期会话 ${removed.length} 个: ${removed.join(", ")}`);
+  }
+  ctx.provide("sessions", sessions);
 };
 
 export const memoryPlugin = (ctx) => {

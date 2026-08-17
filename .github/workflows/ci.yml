@@ -45,7 +45,7 @@ jobs:
         run: npm run build
         timeout-minutes: 10
 
-  # 本地能力评测 (零依赖, 不探活 LLM)
+  # 能力评测: 本地能力必跑; 配了 PPX_E2E_* secrets 时额外跑 LLM 端到端回归
   eval:
     runs-on: ubuntu-latest
     steps:
@@ -56,3 +56,11 @@ jobs:
       - name: 本地能力评测
         run: node scripts/eval.js
         timeout-minutes: 5
+      - name: LLM 端到端回归 (配置了 secrets 时)
+        if: ${{ secrets.PPX_E2E_BASE_URL != '' }}
+        env:
+          PPX_E2E_BASE_URL: ${{ secrets.PPX_E2E_BASE_URL }}
+          PPX_E2E_API_KEY: ${{ secrets.PPX_E2E_API_KEY }}
+          PPX_E2E_MODEL: ${{ secrets.PPX_E2E_MODEL }}
+        run: node scripts/eval.js --llm
+        timeout-minutes: 10

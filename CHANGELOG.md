@@ -1,5 +1,26 @@
 ﻿# CHANGELOG
 
+## v1.0.3 (2026-08-17) — 数据卫生收尾 + 测试提速 30 倍
+
+依据 EVALUATION-2026-08-17 (第三轮) 五项整改全部落地:
+
+### P2 数据卫生
+- **自愈补清 `.bak-*` 文件**: `Healer.cleanupStaleBakFiles()` 保留最近 2 个更早删除 (data/ 现有 3 个手动备份残留清零)
+- **会话过期清理**: `SessionStore.pruneOld()` 启动时清理超期会话 (config.memory.session_max_age_days, 默认 30; default 始终保留); 删除 test.jsonl 测试遗留
+- **测试隔离根治**: `test/memory.layers.test.js` 发现用真实 ROOT 构造 agent 污染生产 data/sessions (违反 P0 测试隔离), 改为 tmp 目录
+
+### P2 CI secrets + P3 并发锁
+- **CI eval job 接 secrets**: 配了 PPX_E2E_BASE_URL/API_KEY/MODEL 时自动跑 `eval.js --llm` LLM 端到端回归, 未配只跑本地能力
+- **FactStore 并发写锁**: add/hit 锁内读-改-写 (withFileLock), 与 Experience 对称, 防军团多进程共享 dataDir 丢更新
+
+### P3 测试提速 (107s → 3.5s, 30 倍)
+- **legion.test.js 90s → 1.5s**: dispatch 测试原发 type=chat 触发真实 LLM (lmstudio 未运行等 180s 超时), 改 ping 验证派发路由
+- **health.test.js 10.7s → 0.09s**: 真实 /models 探测加网络 gate skip (PPX_NET_TEST=1 才跑, 与其他网络测试一致)
+
+### 验证
+- 全量测试 387 项 383 过 0 失败 4 跳过 (网络型) — 从 107s 降至 3.5s
+- web tsc --noEmit 0 错误
+
 ## v1.0.2 (2026-08-17) — 记忆去重闭环 + 语言统一中文
 
 依据 EVALUATION-2026-08-17 (第二轮) 整改: 修复记忆层重复污染 + web 语言统一。

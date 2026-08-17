@@ -4,11 +4,8 @@ import assert from "node:assert";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
 import { PPXAgent } from "../src/agent/index.js";
 import { L0Recorder, SceneStore, PersonaStore } from "../src/memory/index.js";
-
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // 每个测试用独立临时数据目录, 避免数据污染
 function tmpRoot(name) {
@@ -17,13 +14,14 @@ function tmpRoot(name) {
 }
 
 test("L0: 记录原始对话到 JSONL", () => {
-  const a = new PPXAgent({ root: ROOT, configFile: null });
+  const a = new PPXAgent({ root: tmpRoot("l0rec") });
   const before = a.l0.count();
   a.l0.record({ role: "user", content: "今天研究了量子计算在金融的应用", sessionKey: "test" });
   assert.ok(a.l0.count() > before, "L0 文件增长");
   const msgs = a.l0.read();
   assert.ok(Array.isArray(msgs));
   a.shutdown();
+  fs.rmSync(a.dataDir, { recursive: true, force: true });
 });
 
 test("L0: 寒暄噪音被过滤", () => {

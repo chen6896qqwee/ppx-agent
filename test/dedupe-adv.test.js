@@ -4,6 +4,7 @@ import assert from "node:assert";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import { PPXAgent } from "../src/agent/index.js";
 import { FactStore } from "../src/memory/fact-store.js";
 
@@ -110,4 +111,27 @@ test("FactStore 导出 _jaccard / findSimilar 纯函数可测", () => {
   assert.equal(typeof a.facts.findSimilar, "function");
   a.shutdown();
   fs.rmSync(a.dataDir, { recursive: true, force: true });
+});
+
+// ---- 并发写保护 (withFileLock) ----
+test("FactStore.add: 多进程并发写不丢事实 (锁内读-改-写)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-factlock-"));
+  const target = path.join(dir, "memory");
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(path.join(target, "facts.json"), "[]", "utf8");
+  // 启动 3 个并发子进程各写 5 条不同事实
+  const procs = [];
+  const storeUrl = "file://" + path.join(process.cwd(), "src/memory/fact-store.js").replace(/\\/g, "/");
+  for (let p = 0; p < 3; p++) {
+    const code = `
+      import { FactStore } from "${storeUrl}";
+      const s = new FactStore("${dir.replace(/\\/g, "/")}");
+      for (let i = 0; i < 5; i++) s.add("并发进程${p}事实" + i + " 独特内容", { source: "test" });
+    `;
+    procs.push(spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", timeout: 15000 }));
+  }
+  for (const pr of procs) assert.equal(pr.status, 0, "子进程应正常退出: " + (pr.stderr || "").slice(0, 100));
+  const final = JSON.parse(fs.readFileSync(path.join(target, "facts.json"), "utf8"));
+  assert.equal(final.length, 15, "15 条并发写入全保留, 无覆盖丢失 (实际 " + final.length + ")");
+  fs.rmSync(dir, { recursive: true, force: true });
 });

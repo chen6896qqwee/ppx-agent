@@ -40,3 +40,23 @@ test("P1#6: SessionStore.delete 移除", () => {
   s.delete("k");
   assert.equal(s.has("k"), false);
 });
+
+test("pruneOld: 删除过期会话, 保留 default 和近期会话", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-prune-"));
+  const s = new SessionStore(root);
+  s.append("default", "user/message", { content: "主会话" });
+  s.append("recent", "user/message", { content: "近期会话" });
+  s.append("stale", "user/message", { content: "过期会话" });
+  // 把 stale 会话的最后事件时间改为 60 天前 (直接改内存 + 落盘)
+  const evs = s._logs.get("stale");
+  evs[evs.length - 1].ts = Date.now() - 60 * 86400000;
+  s._flush("stale");
+  const removed = s.pruneOld({ maxAgeDays: 30 });
+  assert.ok(removed.includes("stale"), "应删除过期会话");
+  assert.ok(!removed.includes("default"), "default 应保留");
+  assert.ok(!removed.includes("recent"), "近期会话应保留");
+  assert.ok(s.has("default"), "default 还在");
+  assert.ok(s.has("recent"), "近期会话还在");
+  assert.ok(!s.has("stale"), "过期会话已删");
+  fs.rmSync(root, { recursive: true, force: true });
+});
