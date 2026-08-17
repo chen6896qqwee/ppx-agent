@@ -1,7 +1,8 @@
 ﻿// src/memory/experience.js - 经验库 (自学习)
 // 从每次任务结果中提炼经验, 供后续任务参考 (参考 openhanako experience)
+// 跨 agent 共享: 支持全局经验目录 (globalDataDir), 写入用文件锁防并发覆盖
 import path from "node:path";
-import { ensureDir, readJson, writeJson, nowISO } from "../utils/store.js";
+import { ensureDir, readJson, writeJson, nowISO, withFileLock } from "../utils/store.js";
 
 export class Experience {
   constructor(dataDir) {
@@ -22,10 +23,14 @@ export class Experience {
       uses: 0,
     };
     if (!entry.lesson || entry.lesson.length < 5) return null;
-    this.lessons.push(entry);
-    this._prune();
-    writeJson(this.file, this.lessons);
-    return entry;
+    // 锁内读-改-写: 防止多 agent 共享经验库时并发覆盖
+    return withFileLock(this.file, () => {
+      this.lessons = readJson(this.file, []);
+      this.lessons.push(entry);
+      this._prune();
+      writeJson(this.file, this.lessons);
+      return entry;
+    });
   }
 
   recall(taskDesc) {
@@ -44,8 +49,11 @@ export class Experience {
   }
 
   use(id) {
-    const l = this.lessons.find((x) => x.id === id);
-    if (l) { l.uses += 1; writeJson(this.file, this.lessons); }
+    withFileLock(this.file, () => {
+      this.lessons = readJson(this.file, []);
+      const l = this.lessons.find((x) => x.id === id);
+      if (l) { l.uses += 1; writeJson(this.file, this.lessons); }
+    });
   }
 
   _prune() {

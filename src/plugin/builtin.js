@@ -13,6 +13,7 @@ import {
 } from "../tools/index.js";
 import { embedderFromConfig } from "../llm/embedder.js";
 import { LocalShellProvider } from "../seam/shell.js";
+import { registerDelegateTools } from "../tools/delegate.js";
 import { Traces } from "../utils/trace.js";
 import { ModeRegistry, registerDefaultModes } from "../mode/index.js";
 import { planExecExecutor } from "../mode/plan-exec.js";
@@ -62,7 +63,8 @@ export const factsPlugin = (ctx) => {
 };
 
 export const experiencePlugin = (ctx) => {
-  ctx.provide("experience", new Experience(ctx.consume("dataDir")));
+  // 经验库走全局共享目录 (ANS 全局记忆): 跨 agent 共享经验, 写入用文件锁防并发覆盖
+  ctx.provide("experience", new Experience(ctx.consume("globalDataDir") || ctx.consume("dataDir")));
 };
 
 export const sessionPlugin = (ctx) => {
@@ -115,6 +117,8 @@ export const toolsPlugin = (ctx) => {
   // 向量化: 配了 config.embedding 则自动注入 embedder, 检索切 dense+BM25 RRF; 否则纯 BM25 兜底
   const embedder = embedderFromConfig(config);
   if (embedder) facts.setEmbedder(embedder);
+  // 多 agent 自主协作: spawn_agent 工具 (agent 自主派生子 agent 分工)
+  registerDelegateTools(tools, {});
   // Shell 能力 seam: 命令执行解耦为可替换 provider (本地/未来沙箱/Docker)
   ctx.provide("shell", new LocalShellProvider());
   ctx.provide("tools", tools);

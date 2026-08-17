@@ -19,11 +19,15 @@ export class Legion extends EventEmitter {
   }
 
   // 创建一个 agent 子进程
-  spawnAgent(name, { dataDir, env = {} } = {}) {
+  spawnAgent(name, { dataDir, globalDataDir, env = {} } = {}) {
     if (this.agents.has(name)) return this.agents.get(name);
+    const env2 = { ...process.env, ...env };
+    if (dataDir) env2.PPX_AGENT_DATA_DIR = dataDir;
+    // 全局共享目录: 跨 agent 共享经验库 (ANS 全局记忆)
+    if (globalDataDir) env2.PPX_AGENT_GLOBAL_DATA_DIR = globalDataDir;
     const proc = spawn(this.nodeBin, [this.workerPath], {
       cwd: ROOT,
-      env: { ...process.env, ...env, ...(dataDir ? { PPX_AGENT_DATA_DIR: dataDir } : {}) },
+      env: env2,
       stdio: ["pipe", "pipe", "inherit"],
     });
     const entry = { proc, pending: new Map(), counter: 0 };

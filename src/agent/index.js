@@ -66,11 +66,13 @@ export function toToolContent(result) {
 }
 
 export class PPXAgent {
-  constructor({ root = ROOT, configFile = null, plugins = [], dataDir = null } = {}) {
+  constructor({ root = ROOT, configFile = null, plugins = [], dataDir = null, globalDataDir = null } = {}) {
     this.root = root;
     // dataDir 可覆盖: 显式参数 > PPX_DATA_DIR 环境变量 > 默认目录
     // 默认目录: 包装在 node_modules 里时外置到 ~/.ppx (防卸载丢数据), 否则 root/data
     this.dataDir = dataDir || process.env.PPX_DATA_DIR || this._defaultDataDir(root);
+    // 全局共享数据目录 (跨 agent 共享经验等): 显式参数 > PPX_AGENT_GLOBAL_DATA_DIR > 本地 dataDir
+    this.globalDataDir = globalDataDir || process.env.PPX_AGENT_GLOBAL_DATA_DIR || this.dataDir;
     this.config = this._loadConfig(configFile);
     this.userName = this.config.user?.name || "兄弟";
 
@@ -78,6 +80,7 @@ export class PPXAgent {
     this.ctx = new Context();
     this.ctx.provide("root", root);
     this.ctx.provide("dataDir", this.dataDir);
+    this.ctx.provide("globalDataDir", this.globalDataDir);
     this.ctx.provide("config", this.config);
     this.ctx.provide("userName", this.userName);
     this.ctx.provide("agent", this);

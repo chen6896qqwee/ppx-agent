@@ -4,7 +4,12 @@ import { PPXAgent } from "../agent/index.js";
 
 const root = process.cwd();
 // 可选: 独立数据目录 (多进程军团隔离, 避免互踩同一个 data/)
-const agent = new PPXAgent({ root, dataDir: process.env.PPX_AGENT_DATA_DIR || undefined });
+// 可选: 全局共享目录 (跨 agent 共享经验库 = ANS 全局记忆)
+const agent = new PPXAgent({
+  root,
+  dataDir: process.env.PPX_AGENT_DATA_DIR || undefined,
+  globalDataDir: process.env.PPX_AGENT_GLOBAL_DATA_DIR || undefined,
+});
 
 // 从 stdin 读 JSON 行
 process.stdin.setEncoding("utf8");
