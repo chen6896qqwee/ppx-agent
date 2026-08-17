@@ -3,12 +3,12 @@
 // 输出: 结构化 JSON 报告 (成功/失败/延迟), 覆盖功能/安全/性能/可控性四大验收维度
 // 说明: 用 tmp 根目录隔离 (不污染生产 data/), 用可编程 stub LLM 测工具循环
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { PPXAgent } from "../src/agent/index.js";
 import { scrubPII } from "../src/utils/pii.js";
+import { makeTmpRoot, makeAgentOnRoot, cleanupTmp } from "./lib/tmp-agent.js";
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-acceptance-"));
+// 统一数据隔离 (v1.1.0): 临时根 + 显式 dataDir 覆盖 PPX_DATA_DIR + 清理走安全护栏 (杜绝误删生产)
+const root = makeTmpRoot("acceptance");
 
 // 可编程 stub LLM: script 队列按序返回 message, 测工具循环/失败重试
 function makeLLM(script = []) {
@@ -46,7 +46,7 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
 async function functionalSuite() {
   // 工具调用循环 (stub LLM 返回 tool_calls -> read_file -> 最终文本)
   {
-    const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+    const agent = makeAgentOnRoot(root);
     fs.writeFileSync(path.join(root, "a.txt"), "hello world");
     const llm = makeLLM([
       { tool_calls: [{ id: "t1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "a.txt" }) } }] },
@@ -63,7 +63,7 @@ async function functionalSuite() {
 
   // 本地意图: 问候不调 LLM
   {
-    const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+    const agent = makeAgentOnRoot(root);
     agent.llm = null; // 无 LLM 也应能本地处理
     await check("功能", "本地意图: 问候不调 LLM", async () => {
       const r = await agent.chat("你好");
@@ -80,7 +80,7 @@ async function functionalSuite() {
 
   // 工具系统: 错误语义 + 未知工具
   {
-    const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+    const agent = makeAgentOnRoot(root);
     await check("功能", "工具: 未知工具返回[工具错误]", async () => {
       const r = await agent.tools.call("no_such_tool", {});
       assert(r.startsWith("[工具错误]"), `应带错误前缀, 实际: ${r}`);
@@ -96,7 +96,7 @@ async function functionalSuite() {
 
   // 多轮记忆: 5 轮后约束仍在历史
   {
-    const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+    const agent = makeAgentOnRoot(root);
     const llm = makeLLM([{ content: "好的，我会用中文回答" }]);
     agent.llm = llm;
     await check("功能", "多轮记忆: 5 轮后初始约束保留在会话", async () => {
@@ -114,25 +114,25 @@ async function functionalSuite() {
 
   // 会话持久化: 重建 agent 后历史不丢
   {
-    const subRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-persist-"));
-    const agent = new PPXAgent({ root: subRoot, dataDir: path.join(subRoot, "data"), globalDataDir: path.join(subRoot, "data") });
+    const subRoot = makeTmpRoot("persist"); // 持久化用例独立临时根
+    const agent = makeAgentOnRoot(subRoot);
     const llm = makeLLM([{ content: "done" }]);
     agent.llm = llm;
     await agent.chat("持久化测试消息", { sessionKey: "p" });
     agent.shutdown();
-    const agent2 = new PPXAgent({ root: subRoot, dataDir: path.join(subRoot, "data"), globalDataDir: path.join(subRoot, "data") });
+    const agent2 = makeAgentOnRoot(subRoot);
     await check("功能", "会话持久化: 重启后历史不丢", async () => {
       const hist = agent2.sessionStore.deriveMessages("p");
       assert(hist.some((m) => m.content.includes("持久化测试消息")), "重启后应能读到历史");
       return `重启后历史 ${hist.length} 条`;
     });
     agent2.shutdown();
-    fs.rmSync(subRoot, { recursive: true, force: true });
+    cleanupTmp(subRoot);
   }
 
   // 异常: 工具失败自愈重试
   {
-    const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+    const agent = makeAgentOnRoot(root);
     // 第一轮 tool_calls 调 read_file 但文件不存在(失败), 触发错误重试
     const llm = makeLLM([
       { tool_calls: [{ id: "t1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "missing.txt" }) } }] },
@@ -150,7 +150,7 @@ async function functionalSuite() {
 
 // ============ 二、安全红队 ============
 async function securitySuite() {
-  const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+  const agent = makeAgentOnRoot(root);
   const sec = agent.config.security; // { allow_all:false, code_act:false }
 
   // 命令白名单: 高危命令拦截
@@ -210,7 +210,7 @@ async function securitySuite() {
 async function performanceSuite() {
   // 本地意图延迟 (不调 LLM, 应为毫秒级)
   {
-    const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+    const agent = makeAgentOnRoot(root);
     agent.llm = null;
     const t0 = Date.now();
     for (let i = 0; i < 20; i++) await agent._localIntent("你好");
@@ -224,7 +224,7 @@ async function performanceSuite() {
 
   // 工具结果裁剪 (token 控制)
   {
-    const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+    const agent = makeAgentOnRoot(root);
     await check("性能", "工具结果超长裁剪 (防 token 失控)", async () => {
       const long = "x".repeat(10000);
       const r = await agent.tools.call("read_file", { path: "big.txt" }, { agent });
@@ -240,7 +240,7 @@ async function performanceSuite() {
 
 // ============ 四、可控性 ============
 async function controllabilitySuite() {
-  const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+  const agent = makeAgentOnRoot(root);
 
   // 工具轨迹可追溯 (JSONL) — 通过 _runTool 走统一工具执行入口 (轨迹记录在编排层)
   await check("可控", "工具调用轨迹落盘 JSONL", async () => {
@@ -293,5 +293,5 @@ const passed = results.filter((r) => r.pass).length;
 const failed = results.filter((r) => !r.pass).length;
 console.log(JSON.stringify({ total, passed, failed, rate: (passed / total * 100).toFixed(1) + "%", results }, null, 2));
 
-fs.rmSync(root, { recursive: true, force: true });
+cleanupTmp(root);
 process.exit(failed > 0 ? 1 : 0);

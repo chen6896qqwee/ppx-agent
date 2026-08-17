@@ -15,11 +15,10 @@
 //   node scripts/eval.js --provider deepseek --llm   # 用 config 里指定 provider
 //   node scripts/eval.js --llm --quick   # 只跑本地能力, 不探活 LLM
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PPXAgent } from "../src/agent/index.js";
 import { loadConfig } from "../src/config/index.js";
+import { makeTmpRoot, makeAgentOnRoot, cleanupTmp } from "./lib/tmp-agent.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -37,18 +36,15 @@ function check(name, ok, detail = "") {
 }
 
 function tmpRoot() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-eval-"));
-  fs.mkdirSync(path.join(root, "config"), { recursive: true });
-  fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({ providers: [] }));
-  return root;
+  return makeTmpRoot("eval");
 }
 
 // ---- (1) 本地能力层 ----
 async function localCapabilities() {
   console.log("── (1) 本地能力层 (零依赖) ──");
   const root = tmpRoot();
-  // v1.0.9: 显式传 dataDir 覆盖 PPX_DATA_DIR 环境变量 — 否则该变量指向生产时, 评测会写/删生产数据 (P0)
-  const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+  // 统一数据隔离: makeAgentOnRoot 显式落 dataDir/globalDataDir 到临时根内 (覆盖 PPX_DATA_DIR), 清理走 cleanupTmp 安全护栏
+  const agent = makeAgentOnRoot(root);
 
   // 问候识别 (本地意图, 不调 LLM)
   const greet = await agent.chat("你好");
@@ -79,8 +75,7 @@ async function localCapabilities() {
   const read = await agent.chat("读文件 demo.txt");
   check("文件工具", String(read).includes("ppx-agent"), String(read).slice(0, 40));
 
-  agent.shutdown();
-  fs.rmSync(agent.dataDir, { recursive: true, force: true });
+  cleanupTmp({ root, agent });
   return { pass, fail };
 }
 

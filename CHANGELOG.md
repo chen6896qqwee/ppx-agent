@@ -1,4 +1,39 @@
-﻿# CHANGELOG
+# CHANGELOG
+
+## v1.1.0 (2026-08-17) — 第十轮评价整改: 配置键一致性 + 上下文溢出兜底 + 脚本数据隔离统一 + token 持久化 + 会话按天分片
+
+依据 EVALUATION-2026-08-17 (第十轮) 整改。这轮兑现第九轮报告第六节「下一轮候选」全部 6 项 (P1×3 + P2×3)。
+
+### P1 配置键一致性 (第九轮建议 #1)
+- **新增 `test/config-consistency.test.js`**: 读 DEFAULT_CONFIG → 递归收集所有叶子键 → 断言每个键要么被 `CONSUMED` 表消费、要么进了 `RESERVED` 表(显式预留)。任何新增配置键不接消费点/不改注册表 → 该测试直接 FAIL, 杜绝"配置写了对但静默失效"。CONSUMED/RESERVED 两表兼作活文档
+- 审计补齐遗漏: `security.deny` / `tools.disabled` 从未在 DEFAULT_CONFIG 声明却已被消费 → 补进默认结构; 新增 `memory.context_window`/`context_window_ratio`/provider `context_window`
+- 移除死配置 `selfheal.max_restart_attempts` (代码零消费) — DEFAULT_CONFIG/config/ppx.json/docs/CONFIG.md 三处清理干净
+
+### P1 上下文溢出兜底 (第九轮建议 #2, 本地小模型上下文溢出实测场景)
+- **窗口感知历史预算**: `LLMClient.context_window` + `_histTokenCap()` — 用 provider 上下文窗口 ×60% 反推历史 token 硬上限, 与 `history_token_budget` 取小; 本地小模型即使历史预算配大也不会把上下文塞爆
+- **强制硬裁剪**(不依赖 LLM): `_ensureContextFit()` 在 `_trimHistory` 基础上加绝对兜底(条数硬截 + 最近优先 token 裁剪, 必保最后一条); `_getSession` 双保险
+- **溢出检测 + 自动降档重试**: `_isOverflowError()` 识别 `Context size exceeded`/`maximum context length`/413 等措辞(不误判 AbortError); `_llmWithTools` 捕获溢出 → `_shrinkMessagesForOverflow` 保留 system + 最后 user 起完整单元(含 in-flight 工具配对, 不剪成孤立 tool 消息) → 重发, 最多 2 档
+- 新增 `test/context-overflow.test.js` (7 用例)
+
+### P1 脚本数据隔离统一 (第九轮建议 #3)
+- 新增 `scripts/lib/tmp-agent.js`: `makeTmpRoot`/`makeTmpAgent`/`makeAgentOnRoot`/`cleanupTmp`, dataDir 强制落在临时根内(覆盖 PPX_DATA_DIR), 清理必经安全护栏(路径须在 os.tmpdir 内, 否则抛错绝不删)
+- 改造 bench/eval/acceptance/e2e-response-smoke/memory-benchmark/e2e-volcengine-smoke 6 个脚本, 消除各自手写 mkdtemp/dataDir/rmSync (杜绝将来重蹈误删生产数据的覆辙)
+
+### P2 Web token 失效自动引导 (第九轮建议 #4)
+- HTTP 自动生成的 token 持久化到 `data/http-token` (原子写), 重启复用 — 优先级: 显式配置(env/config) > 持久化复用 > 新生成并落盘。前端 localStorage 无需每次重启重贴
+- `resolveAuthToken()` 纯函数可单测; 新增 `test/http-token-persist.test.js`
+
+### P2 default 会话按天分片 (第九轮建议 #5)
+- SessionStore 仅对 `default` 会话分片: `default-YYYY-MM-DD.jsonl` (按事件 ts 自然日), 单文件不再无限增长; 非 default 会话保持单文件
+- seq 跨天连续递增(不每天重头数, compaction upToSeq/fork/replay 不错乱); 合并读取跨片按 seq 升序; 兼容旧 `default.jsonl`; delete/set/fork 处理全部分片
+- 新增 `test/session-daily-shard.test.js` (13 用例)
+
+### P2 selfheal 死配置清理 (第九轮建议 #6)
+- `max_restart_attempts` 无人读取 → 按"要么实现要么移除"移除(实现成本高且无进程监督架构, 移除更合理)
+
+### 验证
+- 全量测试 node --test 见 README 数字 (新增 config-consistency 4 + session-shard 13 + http-token 5 + context-overflow 7 + 修复 session 死断言 1)
+- scripts: acceptance 23/23, bench 0 失败, eval 7/7; 均过统一数据隔离 helper
 
 ## v1.0.9 (2026-08-17) — 第九轮评价整改: 命令执行安全 + 配置键修正 + 脚本数据保护 + 全链路审查
 

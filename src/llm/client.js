@@ -1,4 +1,4 @@
-﻿// src/llm/client.js - LLM 客户端
+// src/llm/client.js - LLM 客户端
 // 后端两种模式:
 //   backend="openclaw" : 通过 `openclaw agent` CLI 驱动 OpenClaw 引擎 (底座=OpenClaw)
 //   backend="http"     : 直接 OpenAI 兼容 HTTP API (零依赖, 用 fetch)  [默认]
@@ -39,6 +39,9 @@ export class LLMClient {
     this.apiKey = provider.api_key || process.env[provider.api_key_env] || "";
     this.model = provider.model || provider.models?.chat || "gpt-4o-mini";
     this.vision = !!provider.vision; // 是否支持多模态 (视觉) — 标记后才会注入图片到 user 消息
+    // 上下文窗口 (token): 供 agent 据此收紧会话历史预算, 防止本地小模型溢出。
+    // 可选字段, provider 未配置时用保守默认 8192 (绝不因未知窗口放大历史)。
+    this.context_window = Number(provider.context_window) || Number(provider.models?.context_window) || 8192;
     this.timeoutMs = provider.timeout_ms || 120000;
     this.retryMax = provider.retry_max ?? 3; // 单次调用内瞬态错误重试次数 (429/5xx/timeout)
     // openclaw 后端专用

@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PPXAgent } from "../src/agent/index.js";
 import { LLMClient } from "../src/llm/client.js";
+import { cleanupTmp } from "./lib/tmp-agent.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CHAT_MODEL = process.argv[2] || "gemma-4-e2b-uncensored-hauhaucs-aggressive-q8_k_p";
@@ -120,7 +121,7 @@ async function main() {
   if (llm) console.log(`LLM扩展: ${llmHit}/${CASES.length} (${(llmHit / CASES.length * 100).toFixed(0)}%)  | 平均 ${avg(llmMsArr)}ms`);
 
   agent.shutdown();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  cleanupTmp(dataDir); // 安全删除临时数据目录 (dataDir 在 os.tmpdir 内, 过安全护栏)
 }
 
 main().catch((e) => { console.error("✗ 失败:", e.message); process.exit(1); });

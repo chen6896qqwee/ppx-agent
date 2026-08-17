@@ -7,10 +7,7 @@
 // 用法:
 //   node scripts/bench.js
 //   PPX_BENCH_CONCURRENCY=50 PPX_BENCH_ROUNDS=500 node scripts/bench.js
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { PPXAgent } from "../src/agent/index.js";
+import { makeTmpAgent, cleanupTmp } from "./lib/tmp-agent.js";
 
 const CONCURRENCY = Number(process.env.PPX_BENCH_CONCURRENCY || 20);
 const ROUNDS = Number(process.env.PPX_BENCH_ROUNDS || 200);
@@ -25,12 +22,8 @@ function stubLLM() {
 }
 
 (async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-bench-"));
-  fs.mkdirSync(path.join(root, "config"), { recursive: true });
-  fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({ providers: [] }));
-
-  // v1.0.9: 显式传 dataDir 覆盖 PPX_DATA_DIR 环境变量 — 否则该变量指向生产时, 下方 rmSync 会删除生产数据 (P0)
-  const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+  // 统一数据隔离 helper: 临时根 + 显式 dataDir 覆盖 PPX_DATA_DIR / 清理必经安全护栏 (杜绝误删生产)
+  const { root, agent } = makeTmpAgent("bench");
   agent.llm = stubLLM();
 
   console.log(`皮皮虾内核压测 | 并发 ${CONCURRENCY} | 轮次 ${ROUNDS} | stub LLM\n`);
@@ -65,8 +58,7 @@ function stubLLM() {
   const sessions = agent.sessionStore.list();
   console.log(`  ${ROUNDS} 轮成功 ${ok} | 耗时 ${(ms / 1000).toFixed(1)}s | ${(ms / ROUNDS).toFixed(1)}ms/轮 | 会话事件 ${sessions.reduce((a, s) => a + (s.count || 0), 0)} 条`);
 
-  agent.shutdown();
-  fs.rmSync(agent.dataDir, { recursive: true, force: true });
+  cleanupTmp({ root, agent });
   console.log("\n=== bench 完成 (失败数 >0 时退出码 1) ===");
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error("✗ bench 失败:", e.message); process.exit(1); });

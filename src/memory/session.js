@@ -4,6 +4,15 @@
 //  - replay() 回放完整事件流 | fork() 从边界派生新会话
 //  - 兼容旧 get/set/has/delete 接口 (agent 无需全量改动)
 // 吸收自 DeepSeek Harness: "model-visible means logged" (能进模型的必须能从日志重建)
+//
+// v1.1.x 第九轮 review P2: default 主会话按天分片 (default-YYYY-MM-DD.jsonl),
+// 单文件不再无限增长。设计要点:
+//  - 仅 key === "default" 走按天分片; 非 default 会话保持单文件 (不扩散改动面)
+//  - 命名: default-YYYY-MM-DD.jsonl (取事件 ts 所在本地自然日, 与 eventsByDay/logicalDay 一致)
+//  - 兼容旧文件: 若历史遗留 default.jsonl, 读取时纳入合并, 不丢历史
+//  - seq 跨天连续递增: 同一 default 会话所有分片共用一个 seq 序列, 不从 1 重头数
+//    (否则 compaction 的 upToSeq / fork / replay 会错乱)
+//  - 所有读取路径把多天分片合并成按 seq(ts) 升序的单一事件流
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir } from "../utils/store.js";
@@ -18,6 +27,9 @@ export const EVENTS = {
   COMPACTION: "compaction/summary",
 };
 
+// default 会话按天分片: default-YYYY-MM-DD.jsonl
+const DEFAULT_SHARD_RE = /^default-\d{4}-\d{2}-\d{2}\.jsonl$/;
+
 export class SessionStore {
   constructor(dataDir) {
     this.dir = path.join(dataDir, "sessions");
@@ -29,6 +41,7 @@ export class SessionStore {
   }
 
   _safe(key) { return String(key || "default").replace(/[^\w.-]/g, "_"); }
+  // 旧单文件路径 (仅非 default 会话使用)
   _file(key) { return path.join(this.dir, this._safe(key) + ".jsonl"); }
 
   _log(key) {
@@ -37,17 +50,57 @@ export class SessionStore {
     return this._logs.get(k);
   }
 
+  // 判断文件名是否为 default 的日分片
+  _isShard(fname) { return DEFAULT_SHARD_RE.test(fname); }
+  // default 分片文件路径 (day 形如 YYYY-MM-DD)
+  _shardFile(day) { return path.join(this.dir, `default-${day}.jsonl`); }
+  // 事件 ts 归属的本地自然日 (与 eventsByDay/logicalDay 一致, 避免时区错位)
+  _dayOf(ts) {
+    const d = new Date(ts);
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${m}-${day}`;
+  }
+  // 列出 default 相关的所有文件 (旧单文件 + 各日分片)
+  _defaultFiles() {
+    let files = [];
+    try {
+      files = fs.readdirSync(this.dir)
+        .filter((f) => f.endsWith(".jsonl") && (f === "default.jsonl" || this._isShard(f)));
+    } catch {}
+    return files.map((f) => path.join(this.dir, f));
+  }
+  _removeDefaultFiles() {
+    for (const f of this._defaultFiles()) { try { fs.rmSync(f, { force: true }); } catch {} }
+  }
+
+  // 读取单个 jsonl 文件的事件序列
+  _readEventsFromFile(file) {
+    const events = [];
+    try {
+      for (const l of fs.readFileSync(file, "utf8").split("\n").filter(Boolean)) {
+        try { const e = JSON.parse(l); if (e && e.seq && e.type && e.data) events.push(e); } catch {}
+      }
+    } catch {}
+    return events;
+  }
+
   _loadAll() {
     let files = [];
     try { files = fs.readdirSync(this.dir).filter((f) => f.endsWith(".jsonl")); } catch { return; }
     for (const f of files) {
-      const k = f.replace(/\.jsonl$/, "");
-      const events = [];
-      try {
-        for (const l of fs.readFileSync(path.join(this.dir, f), "utf8").split("\n").filter(Boolean)) {
-          try { const e = JSON.parse(l); if (e && e.seq && e.type && e.data) events.push(e); } catch {}
+      // default 的旧单文件 + 日分片 → 归并到同一个 key="default"
+      if (f === "default.jsonl" || this._isShard(f)) {
+        const events = this._readEventsFromFile(path.join(this.dir, f));
+        if (events.length) {
+          const k = "default";
+          const cur = this._logs.get(k) || [];
+          this._logs.set(k, cur.concat(events));
         }
-      } catch {}
+        continue;
+      }
+      const k = f.replace(/\.jsonl$/, "");
+      const events = this._readEventsFromFile(path.join(this.dir, f));
       if (events.length) {
         events.sort((a, b) => a.seq - b.seq);
         this._logs.set(k, events);
@@ -55,13 +108,21 @@ export class SessionStore {
         this._flushedSeq.set(k, events[events.length - 1].seq);
       }
     }
+    // default: 跨文件合并后按 seq(ts 兜底) 升序 + 统一 next/flushed seq (跨天连续递增)
+    if (this._logs.has("default")) {
+      const evs = this._logs.get("default");
+      evs.sort((a, b) => a.seq - b.seq || a.ts - b.ts);
+      this._nextSeq.set("default", evs[evs.length - 1].seq);
+      this._flushedSeq.set("default", evs[evs.length - 1].seq);
+    }
   }
 
   // 追加事件 (唯一写入路径, append-only, 永不重写/裁剪日志文件)
-  append(key, type, data) {
+  // ts 可选: 测试/回溯时可注入固定时间戳; 缺省用 Date.now() (向后兼容)
+  append(key, type, data, ts) {
     const k = this._safe(key);
     const seq = (this._nextSeq.get(k) || 0) + 1;
-    const ev = { seq, ts: Date.now(), type, data };
+    const ev = { seq, ts: Number.isFinite(ts) ? ts : Date.now(), type, data };
     this._log(k).push(ev);
     this._nextSeq.set(k, seq);
     this._flush(k);
@@ -120,6 +181,8 @@ export class SessionStore {
   fork(fromKey, boundarySeq, toKey) {
     const keep = this._log(this._safe(fromKey)).filter((e) => e.seq <= boundarySeq);
     const k = this._safe(toKey);
+    // 目标为 default 时先清掉旧分片, 再按边界重建 (避免 keep 追加到已有同 seq 行造成重复)
+    if (k === "default") this._removeDefaultFiles();
     this._logs.set(k, [...keep]);
     this._nextSeq.set(k, keep.length ? keep[keep.length - 1].seq : 0);
     this._flushedSeq.delete(k);
@@ -153,6 +216,8 @@ export class SessionStore {
   get(key) { return this.deriveMessages(key); }
   set(key, history) {
     const k = this._safe(key);
+    // default 为分片存储: 清掉内存前先删旧分片, 保证重建后磁盘与内存一致 (无残留旧文件)
+    if (k === "default") this._removeDefaultFiles();
     this._logs.delete(k); this._nextSeq.set(k, 0); this._flushedSeq.delete(k);
     for (const m of (history || [])) this.append(k, m.role === "user" ? EVENTS.USER : EVENTS.ASSISTANT, { content: m.content });
     return history;
@@ -176,11 +241,19 @@ export class SessionStore {
   delete(key) {
     const k = this._safe(key);
     this._logs.delete(k); this._nextSeq.delete(k); this._flushedSeq.delete(k);
-    try { fs.rmSync(this._file(k), { force: true }); } catch {}
+    try {
+      if (k === "default") {
+        // 删除 default 所有分片 (旧单文件 + 各日 shard)
+        this._removeDefaultFiles();
+      } else {
+        fs.rmSync(this._file(k), { force: true });
+      }
+    } catch {}
   }
 
   // 清理过期会话: 删除超过 maxAgeDays 天未活跃的非 default 会话文件
   // 返回删除的会话 key 列表。default 主会话始终保留 (防误删主对话历史)
+  // 分片说明: default 的各日分片在 _logs 中只对应一个 key="default", 不会被误当独立会话删除
   pruneOld({ maxAgeDays = 30, keep = [] } = {}) {
     const now = Date.now();
     const cutoff = now - maxAgeDays * 86400000;
@@ -198,6 +271,7 @@ export class SessionStore {
   }
 
   // 增量落盘: 只追加 flushedSeq 之后的新事件 (P1#5, 消除大会话全量重写)
+  // default 按天落盘: 只把当天分片写到对应 default-YYYY-MM-DD.jsonl, 非当前天文件不再改写
   _flush(key) {
     const k = this._safe(key);
     const evs = this._logs.get(k) || [];
@@ -206,17 +280,41 @@ export class SessionStore {
     const pending = evs.filter((e) => e.seq > flushed);
     if (!pending.length) return;
     try {
-      const line = pending.map((e) => JSON.stringify(e)).join("\n") + "\n";
-      if (flushed === 0) {
-        // 首次或重建: 全量覆盖, 保证文件与内存一致 (防残留旧内容)
-        fs.writeFileSync(this._file(k), line, "utf8");
-      } else {
-        fs.appendFileSync(this._file(k), line, "utf8");
-      }
+      if (k === "default") this._flushDaily(pending);
+      else this._flushLegacy(k, pending, flushed);
       this._flushedSeq.set(k, evs[evs.length - 1].seq);
     } catch (e) {
       // v1.0.9: 落盘失败不再静默 (磁盘满/权限丢失消息不可见), 至少留日志
       try { console.warn(`[session] 会话 ${k} 落盘失败: ${e.message}`); } catch {}
+    }
+  }
+
+  // 非 default 会话: 原单文件增量写 (首次全量覆盖重建, 之后追加)
+  _flushLegacy(k, pending, flushed) {
+    const line = pending.map((e) => JSON.stringify(e)).join("\n") + "\n";
+    if (flushed === 0) {
+      fs.writeFileSync(this._file(k), line, "utf8");
+    } else {
+      fs.appendFileSync(this._file(k), line, "utf8");
+    }
+  }
+
+  // default 会话: 按事件 ts 归属的天分片增量写
+  //  - 按天分组: 每个文件只追加自己那天的行
+  //  - 当天文件已有则追加, 首次创建则写入新文件
+  _flushDaily(pending) {
+    const byDay = new Map();
+    for (const e of pending) {
+      const d = this._dayOf(e.ts);
+      let g = byDay.get(d);
+      if (!g) { g = []; byDay.set(d, g); }
+      g.push(e);
+    }
+    for (const [d, group] of byDay) {
+      const file = this._shardFile(d);
+      const line = group.map((e) => JSON.stringify(e)).join("\n") + "\n";
+      if (fs.existsSync(file)) fs.appendFileSync(file, line, "utf8");
+      else fs.writeFileSync(file, line, "utf8"); // 新的一天文件首次写入
     }
   }
 }

@@ -25,6 +25,7 @@ npm run chat
 | `vision` | `true` 标记为视觉模型（多模态读图时路由到此） |
 | `timeout_ms` | 超时（毫秒，默认 120000） |
 | `retry_max` | 单次调用内瞬态错误重试次数（默认 3） |
+| `context_window` | 上下文窗口（token）。agent 据此收紧会话历史预算，防本地小模型溢出（未配置回退 memory.context_window） |
 | `mjs` | openclaw 引擎的 openclaw.mjs 路径（可留空走 `PPX_OPENCLAW_MJS` 环境变量） |
 | `dsh_root` | DeepSeek Harness 源码根（可留空走 `PPX_DSH_ROOT`） |
 
@@ -60,6 +61,8 @@ npm run chat
 | `forget_speed` | 1 | 遗忘速度（实际生效） |
 | `max_history_items` | 40 | 会话历史条数上限 |
 | `history_token_budget` | 4000 | 会话历史 token 预算（超阈值触发压缩） |
+| `context_window` | 8192 | 上下文窗口兜底（未知窗口时保守默认，溢出防护用）|
+| `context_window_ratio` | 0.6 | 历史+工具结果占用上下文窗口的安全比例上限 |
 | `max_facts` | 1000 | L1 记忆总量上限 |
 | `session_max_age_days` | 30 | 会话日志保留天数（启动时清理过期会话，0=不清理） |
 | `enabled` / `token_budget` / `compile_threshold` | — | **预留字段，当前代码未读取**（记忆开关/注入预算/场景聚类阈值暂未实现） |
@@ -78,12 +81,12 @@ npm run chat
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
-| `experience.enabled` | true | 经验库开关 |
-| `selfheal.enabled` | true | 启动自愈体检 |
-| `selfheal.check_interval_ms` | 60000 | 自愈检查间隔 |
-| `selfheal.max_restart_attempts` | 3 | 崩溃重启上限 |
+| `experience.enabled` | true | 经验库开关（预留，经验库常开） |
+| `selfheal.enabled` | true | 启动自愈体检（兼容保留，自愈由命令显式触发） |
+| `selfheal.check_interval_ms` | 60000 | 自愈检查间隔（预留，未接入配置定时器） |
 | `tools.enabled` | true | 工具系统开关 |
 | `tools.custom_dir` | custom-tools | 自定义工具目录 |
+| `tools.disabled` | [] | 需禁用的工具名列表（Web 设置页「启停」写盘） |
 | `plugins.dir` | plugins | 插件目录 |
 
 ## mcp（MCP 工具服务器）

@@ -43,12 +43,15 @@ export const DEFAULT_CONFIG = {
     forget_speed: 1,
     max_history_items: 40,          // 会话历史条数上限 (信息量感知裁剪)
     history_token_budget: 4000,     // 会话历史 token 预算
+    context_window: 8192,           // provider 上下文窗口兜底 (未知窗口时的保守默认, 溢出防护)
+    context_window_ratio: 0.6,      // 历史+工具结果占用上下文窗口的安全比例上限
     max_facts: 1000,                // L1 原子记忆总量上限 (防膨胀, 超限裁剪最弱)
     session_max_age_days: 30,       // 会话日志保留天数 (启动时清理过期会话, 0=不清理)
   },
   experience: { enabled: true },
-  selfheal: { enabled: true, check_interval_ms: 60000, max_restart_attempts: 3 },
-  tools: { enabled: true, custom_dir: "custom-tools" },
+  // selfheal.max_restart_attempts 已在 v1.1.0 移除: 代码无任何消费 (死配置)
+  selfheal: { enabled: true, check_interval_ms: 60000 },
+  tools: { enabled: true, custom_dir: "custom-tools", disabled: [] },
   plugins: { dir: "plugins" },
   mcp: { servers: [], auto_connect: false },
   channels: {
@@ -58,7 +61,7 @@ export const DEFAULT_CONFIG = {
     wechat: { enabled: false, path: "/wechat/webhook", token: "", encodingAESKey: "", corpId: "", corpSecret: "", agentId: "" },
     log: { enabled: false, target: "console" },
   },
-  security: { allow_all: false, command_timeout_ms: 30000, code_act: false },
+  security: { allow_all: false, command_timeout_ms: 30000, code_act: false, deny: [] },
 };
 
 // 深度合并: override 优先, base 缺字段用默认值 (数组/标量直接覆盖)

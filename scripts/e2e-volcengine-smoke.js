@@ -1,12 +1,10 @@
-﻿// scripts/e2e-volcengine-smoke.js - 火山方舟云端 deepseek-v4-flash 端到端实测
+// scripts/e2e-volcengine-smoke.js - 火山方舟云端 deepseek-v4-flash 端到端实测
 // 验证: (1) 纯对话响应质量 (2) 工具调用支持 (3) Agent 记忆闭环
 // key: 临时明文, 跑完即删, 不落 config/ppx.json
 // 用法: node scripts/e2e-volcengine-smoke.js
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { LLMClient } from "../src/llm/client.js";
-import { PPXAgent } from "../src/agent/index.js";
+import { makeTmpRoot, makeAgentOnRoot, cleanupTmp } from "./lib/tmp-agent.js";
 
 const KEY = process.env.VOLC_KEY; // 测试用临时 key
 const BASE = "https://ark.cn-beijing.volces.com/api/coding/v3";
@@ -87,16 +85,11 @@ async function llmDirect(client) {
 
 async function agentLoop() {
   console.log(`\n── (2) Agent 层记忆闭环 (coding/v3 是否支持 agent 全链路) ──`);
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-volc-"));
-  fs.mkdirSync(path.join(root, "config"), { recursive: true });
-  fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({
-    providers: [provider],
-    user: { name: "兄弟" },
-  }, null, 2), "utf8");
+  const root = makeTmpRoot("volc", { providers: [provider], user: { name: "兄弟" } });
 
   let writeMs = 0, queryMs = 0, writeOk = false, queryOk = false, writeErr = "", queryErr = "";
   try {
-    const a1 = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+    const a1 = makeAgentOnRoot(root);
     let t0 = Date.now();
     try {
       const reply1 = await a1.chat("记住: 我老婆生日是 8 月 20 号。");
@@ -106,7 +99,7 @@ async function agentLoop() {
     } catch (e) { writeErr = e.message; console.log(`  写入异常: ${e.message}`); }
     a1.shutdown();
 
-    const a2 = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+    const a2 = makeAgentOnRoot(root);
     t0 = Date.now();
     try {
       const reply2 = await a2.chat("我老婆生日是哪天？");
@@ -116,7 +109,7 @@ async function agentLoop() {
     } catch (e) { queryErr = e.message; console.log(`  重启检索异常: ${e.message.slice(0, 100)}`); }
     a2.shutdown();
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    cleanupTmp(root);
   }
   return { writeOk, writeMs, queryOk, queryMs, writeErr, queryErr };
 }

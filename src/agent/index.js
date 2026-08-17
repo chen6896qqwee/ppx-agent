@@ -1,4 +1,4 @@
-﻿// src/agent/index.js - Agent 引擎 (皮皮虾核心) v0.2 含工具调用
+// src/agent/index.js - Agent 引擎 (皮皮虾核心) v0.2 含工具调用
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -27,6 +27,29 @@ const DEFAULT_MAX_TOOL_ERROR_RETRY = 2;
 // 模型不可用/网络不通时快速失败降级, 避免阻塞主对话 (主对话仍走 provider 默认长超时)
 const AUX_LLM_TIMEOUT_MS = 10000;
 // 会话历史条数/token 预算已迁到 config.memory (max_history_items / history_token_budget)
+
+// 上下文窗口感知 (第九轮 review P1): 当 provider 上下文太小、或本地模型真溢出时,
+// 压缩依赖 LLM 摘要帮不上忙。这里用 provider 的 context_window 反推一个
+// 「历史 token 预算硬上限」, 且提供不依赖 LLM 的硬裁剪兜底 + 溢出检测降档重试。
+const DEFAULT_CONTEXT_WINDOW = 8192; // 未知窗口时的保守默认 (绝不放大历史)
+const DEFAULT_CONTEXT_RATIO = 0.6;   // 历史+工具结果占用窗口的安全比例上限
+const DEFAULT_OVERFLOW_SHRINK_MAX = 2; // 溢出时最多再降档裁剪重试几次
+
+// 判断是否为「上下文溢出」错误 (常见信号: 消息含 context/length/token/window, 或 HTTP 400/413)
+// 注意: AbortError(用户取消/内部超时中止) 一律不算溢出, 沿用 retry.js 不重试约定。
+export function _isOverflowError(e) {
+  if (!e) return false;
+  if (e.name === "AbortError" || e.code === "ABORT_ERR") return false;
+  const status = (typeof e.status === "number" ? e.status : e.statusCode) ?? null;
+  if (status === 413) return true; // 请求体过大 (content too large)
+  if (status !== null && status !== 400 && (status >= 500 || status < 400)) return false; // 服务端/非 4xx 非溢出
+  const msg = String(e?.message || e || "");
+  // 仅在消息出现上下文/长度/token 相关措辞时判为溢出, 普适 HTTP 400 不误判
+  if (status === 400) {
+    return /context|token|length|window/i.test(msg);
+  }
+  return /context\s*(size)?\s*exceeded|maximum\s*context\s*length|too\s*many\s*tokens|context\s*window|token\s*(limit|budget)|exceeds?\s*(the\s*)?(model|context|token)|insufficient\s*context/i.test(msg);
+}
 
 // LLM 调用失败的兜底提示: 附排查指引, 避免裸抛错误对用户不友好
 export function LLM_FAILED_HINT(message) {
@@ -283,10 +306,23 @@ export class PPXAgent {
     if (/^(你好|hi|hello|在吗|谢谢|好的|ok|嗯|是的|对|收到|知道|了解|再见|拜拜)/i.test(s.trim())) p -= 3;
     return p;
   }
-  _trimHistory(hist) {
+  // provider 上下文窗口 -> 历史 token 预算硬上限:
+  // 用 llm.context_window(未配置回退 config.memory.context_window) * 安全比例, 与显式预算取小。
+  // 目的: 本地小上下文模型即使没配 history_token_budget, 也不会把历史塞爆窗口。
+  _histTokenCap() {
+    const window = Number(this.llm?.context_window) || Number(this.config?.memory?.context_window) || DEFAULT_CONTEXT_WINDOW;
+    const ratio = Number(this.config?.memory?.context_window_ratio) || DEFAULT_CONTEXT_RATIO;
+    return Math.max(200, Math.floor(window * ratio));
+  }
+
+  // 会话历史裁剪 (中心函数): 条数上限 + token 预算, 信息量感知, 必保最近一条。
+  // opts.budget / opts.maxItems 可覆盖 (溢出降档重试时传更紧预算)。
+  // token 预算 = min(显式 history_token_budget, 窗口硬上限), 两者都收紧, 取小者。
+  _trimHistory(hist, opts = {}) {
     let h = [...hist];
-    const maxItems = Number(this.config.memory?.max_history_items) || 40;
-    const tokenBudget = Number(this.config.memory?.history_token_budget) || 4000;
+    const maxItems = opts.maxItems != null ? opts.maxItems : (Number(this.config.memory?.max_history_items) || 40);
+    const cfgBudget = Number(this.config.memory?.history_token_budget) || 4000;
+    const tokenBudget = opts.budget != null ? opts.budget : Math.min(cfgBudget, this._histTokenCap());
     // 1) 条数上限: 超限时按信息量淘汰 (低信息量优先, 从旧到新)
     if (h.length > maxItems) {
       const scored = h.map((m, i) => ({ m, i, p: this._historyPriority(m) }));
@@ -317,8 +353,57 @@ export class PPXAgent {
     return h;
   }
 
+  // 绝对硬裁剪兜底 (第九轮 review P1: 不依赖 LLM 也能保证历史放得下):
+  // 在 _trimHistory 基础上再加一道绝对底线 — 超条数则保留最近 N 轮,
+  // 超 token 则从最新向前贪心保留到预算内 (最近信息优先, 必保最后一条)。
+  // 即便 config 异常 (预算极大/极小的模型), 注入的历史也不会超过窗口安全比例。
+  _ensureContextFit(hist, { budget = this._histTokenCap(), maxItems } = {}) {
+    let h = [...hist];
+    const itemCap = maxItems != null ? maxItems : (Number(this.config.memory?.max_history_items) || 40);
+    // 环节 1: 条数绝对兜底 — 超上限只留最近 itemCap 条
+    if (h.length > itemCap) h = h.slice(-itemCap);
+    // 环节 2: token 绝对兜底 — 最近优先贪心直到塞满预算 (必保最后一条)
+    let total = h.reduce((a, m) => a + estimateTokens(m.content), 0);
+    if (total > budget && h.length) {
+      const keep = [];
+      let used = 0;
+      for (let i = h.length - 1; i >= 0; i--) {
+        const t = estimateTokens(h[i].content);
+        // 至少保留最后一条 (当前对话), 其余超预算跳过
+        if (keep.length === 0 || used + t <= budget) {
+          keep.unshift(h[i]); used += t;
+        }
+      }
+      h = keep;
+    }
+    return h;
+  }
+
+  // 溢出降档: 把已组好的消息数组按「更紧历史预算」重建 (消息完整性安全版)。
+  //  - 保留全部 system (角色/记忆/经验)
+  //  - 自最后一条 user 起的一切消息原样保留 (含 in-flight 的 assistant tool_calls + tool 配对,
+  //    绝不剪切成"孤立的 tool 消息"导致 API 400)
+  //  - 只对最后一条 user 之前的旧历史做最近优先硬裁剪到 budget 内
+  _shrinkMessagesForOverflow(messages, budget) {
+    let i = 0;
+    while (i < messages.length && messages[i] && messages[i].role === "system") i++;
+    const systems = messages.slice(0, i);
+    const rest = messages.slice(i);
+    if (!rest.length) return messages; // 只有 system, 无裁剪空间, 原样返回
+    // 从后向前找最后一条 user 作为「进行中单元」起点 (含其后的 tool 配对)
+    let lastUser = rest.length - 1;
+    while (lastUser > 0 && rest[lastUser].role !== "user") lastUser--;
+    const tail = rest.slice(lastUser);          // 完整保留 (结束于 user 或 in-flight 工具单元)
+    const mid = rest.slice(0, lastUser);        // 仅剪这里的历史
+    const itemCap = Math.max(2, Number(this.config.memory?.max_history_items) || 40);
+    const trimmed = this._ensureContextFit(mid, { budget, maxItems: itemCap });
+    return [...systems, ...trimmed, ...tail];
+  }
+
   _getSession(sessionKey) {
-    return this._trimHistory(this.sessionStore.deriveCompacted(sessionKey || "default"));
+    // 先信息量感知裁剪, 再 + 绝对硬兜底: 即便 config 异常/压缩失败, 历史也放得下
+    const raw = this.sessionStore.deriveCompacted(sessionKey || "default");
+    return this._ensureContextFit(this._trimHistory(raw));
   }
 
   // 追加一轮对话为不可变事件 (append-only, 永不重写日志)
@@ -593,21 +678,36 @@ export class PPXAgent {
 
   // LLM + 工具调用循环 (带 provider 回退)
   async _llmWithTools(seedMessages, llmInstance = this.llm) {
-    const messages = [...seedMessages];
+    let messages = [...seedMessages];
     const tools = this.toolsEnabled ? this.tools.toOpenAI() : [];
     // 阈值从 config 读取 (可调), 默认值兜底
     const maxRounds = Number(this.config.agent?.max_tool_rounds) || DEFAULT_MAX_TOOL_ROUNDS;
     const resultBudget = Number(this.config.agent?.tool_result_budget) || DEFAULT_TOOL_RESULT_BUDGET;
     const maxErrorRetry = Number(this.config.agent?.max_tool_error_retry) || DEFAULT_MAX_TOOL_ERROR_RETRY;
     let errorRetries = 0;
+    // 上下文溢出降档: 溢出时裁剪历史后重发, 最多 DEFAULT_OVERFLOW_SHRINK_MAX 档 (第九轮 review P1)
+    let overflowShrinks = 0;
 
     for (let round = 0; round < maxRounds; round++) {
       if (this._interrupted) return "[皮皮虾] 任务已被中断 (operator cancelled).";
       if (this._onStepEvent) { try { this._onStepEvent({ type: "step", round, maxRounds, ts: Date.now() }); } catch {} }
-      const resp = await llmInstance.apiChat(messages, {
-        tools,
-        toolRunner: async (name, args) => this._runTool(name, args),
-      });
+      let resp;
+      try {
+        resp = await llmInstance.apiChat(messages, {
+          tools,
+          toolRunner: async (name, args) => this._runTool(name, args),
+        });
+      } catch (e) {
+        // 上下文溢出: 不影响其它错误路径 — 非溢出照常抛出 (交由 _llmWithFallback 切换 provider / 调用方处理)
+        if (overflowShrinks < DEFAULT_OVERFLOW_SHRINK_MAX && _isOverflowError(e)) {
+          overflowShrinks++;
+          warn(`上下文溢出, 降档裁剪后重试 (${overflowShrinks}/${DEFAULT_OVERFLOW_SHRINK_MAX}): ${String(e?.message || e).slice(0, 120)}`);
+          const cap = Math.max(200, Math.floor(this._histTokenCap() / (overflowShrinks + 1))); // 逐档缩紧
+          messages = this._shrinkMessagesForOverflow(messages, cap);
+          continue;
+        }
+        throw e;
+      }
       const msg = resp.message;
       messages.push(msg);
 

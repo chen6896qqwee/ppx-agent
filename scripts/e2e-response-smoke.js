@@ -3,10 +3,8 @@
 // 覆盖三层: (1) LLM 直连问答质量 (2) 工具调用 (3) Agent 记忆闭环 (写入→重启→检索)
 // 用法: node scripts/e2e-response-smoke.js
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { LLMClient } from "../src/llm/client.js";
-import { PPXAgent } from "../src/agent/index.js";
+import { makeTmpRoot, makeAgentOnRoot, cleanupTmp } from "./lib/tmp-agent.js";
 
 // 当前时间动态关键词 (避免写死)
 const now = new Date();
@@ -83,15 +81,12 @@ async function llmDirect(client) {
 
 async function agentLoop() {
   console.log(`\n── (2) Agent 层记忆闭环 (写入→重启→检索) ──`);
-  // 临时根, 隔离生产数据
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-e2e-"));
-  fs.mkdirSync(path.join(root, "config"), { recursive: true });
-  fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({
+  // 统一数据隔离: 临时根 (含 providers/user 配置) + 显式 dataDir + 安全清理
+  const root = makeTmpRoot("e2e", {
     providers: [config],
     user: { name: "兄弟" },
-  }, null, 2), "utf8");
-
-  const mk = () => new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
+  });
+  const mk = () => makeAgentOnRoot(root);
 
   // 启动 1: 对话 + 记忆写入
   const a1 = mk();
@@ -116,8 +111,7 @@ async function agentLoop() {
   console.log(`  重启检索: "${reply2.replace(/\s+/g, " ").slice(0, 50)}" (${(ms2 / 1000).toFixed(1)}s)`);
   console.log(`  持久化: ${recalled ? "✓ 重启后记忆仍在" : "✗ 记忆丢失"}`);
 
-  a2.shutdown();
-  fs.rmSync(root, { recursive: true, force: true });
+  cleanupTmp({ root, agent: a2 });
   return { saved, recalled, ms: ms1 + ms2 };
 }
 

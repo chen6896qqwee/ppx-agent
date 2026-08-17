@@ -1,4 +1,4 @@
-﻿// src/channels/http.js - HTTP 通道 (零依赖)
+// src/channels/http.js - HTTP 通道 (零依赖)
 // 起一个本地 HTTP server, 接收 POST /message 消息, 调 agent 回复
 import http from "node:http";
 import fs from "node:fs";
@@ -10,10 +10,42 @@ import {
 } from "../config/providers.js";
 import { getSettings, updateSettings } from "../config/settings.js";
 import { suggestProactive } from "../ans/proactive.js";
+import { ensureDir, atomicWrite, readText } from "../utils/store.js";
 
 const MAX_BODY = 1024 * 1024;          // 请求体上限 1MB
 const RATE_PER_MIN = 60;               // 每 IP 每分钟最大请求数 (令牌桶)
 const RATE_WINDOW_MS = 60_000;
+
+// HTTP 鉴权 token 解析 / 生成 (v1.0.9 起持久化, 重启复用, 免去 Web 前端每次重贴 token)
+// 优先级: 1) 显式配置 (env/ppx.json 的 channels.http.auth_token) > 2) 数据目录持久化文件复用 > 3) 新生成并原子落盘
+// @param {object} opts
+// @param {string}       opts.configured    显式配置的 token (PPX_AUTH_TOKEN 或 config 里的 auth_token; 空串视为未配置)
+// @param {string|null}  opts.persistedFile 自动生成 token 的持久化文件路径 (无则仅返回生成, 不落盘)
+// @returns {{ token:string, source:"configured"|"persisted"|"generated", generated:boolean }}
+// 纯函数, 便于单测: 不依赖 agent/实例状态, 全部副作用 (读/写文件) 走参数传入的路径
+export function resolveAuthToken({ configured = "", persistedFile = null } = {}) {
+  const explicit = String(configured || "").trim();
+  // 优先级 1: 显式配置 (env/config) — 以身作则, 不读写持久化文件
+  if (explicit) return { token: explicit, source: "configured", generated: false };
+
+  // 优先级 2: 复用持久化文件里的旧 token (非空)
+  if (persistedFile) {
+    const old = String(readText(persistedFile, "") || "").trim();
+    if (old) return { token: old, source: "persisted", generated: false };
+  }
+
+  // 优先级 3: 新生成随机 token; 若有持久化路径则原子落盘 (写 .tmp 再 rename, 全程目录存在)
+  const token = crypto.randomBytes(24).toString("hex");
+  if (persistedFile) {
+    try {
+      ensureDir(path.dirname(persistedFile));
+      atomicWrite(persistedFile, token); // .tmp + rename: 原子替换, 并发/崩溃不损坏
+    } catch {
+      // token 已生成但在内存可用; 落盘失败仅丢失"跨重启复用", 不阻断启动
+    }
+  }
+  return { token, source: "generated", generated: true };
+}
 
 export class HttpChannel extends Channel {
   constructor(agent, { port = 8899, host = "127.0.0.1" } = {}) {
@@ -23,7 +55,10 @@ export class HttpChannel extends Channel {
     this.server = null;
     this.agent = agent;
     this.publicDir = path.join(this.agent.root, "public");
+    // v1.0.9: token 解析延迟到 connect() 的 _ensureToken, 以便持久化文件与 agent.dataDir 就绪
+    // 这里只缓存显式配置 (env/config), 交给 _ensureToken 走"显式 > 持久化 > 新生成"的优先级
     this.authToken = process.env.PPX_AUTH_TOKEN || this._tokenFromConfig();
+    this._persistedTokenFile = agent.dataDir ? path.join(agent.dataDir, "http-token") : null;
     this._buckets = new Map(); // ip -> {tokens, last}
     // v1.0.8: webhook 路由注册表 (feishu/wechat 通道挂载), 单一 request handler 分发, 无多 listener 竞态
     this.webhookRoutes = new Map(); // path -> async (req, res) => void
@@ -59,17 +94,22 @@ export class HttpChannel extends Channel {
     return "";
   }
 
-  // 若未配置 token, 自动生成随机 token 并打印 (类似 Jupyter token)
+  // 若未配置 token: 复用持久化文件(重启不变)或自动生成并原子落盘 (类似 Jupyter token)
   _ensureToken() {
     if (this.authToken) return this.authToken;
-    this.authToken = crypto.randomBytes(24).toString("hex");
-    const port = this.port;
-    console.log("");
-    console.log("  ⚠️  HTTP 认证 token 未配置, 已自动生成:");
-    console.log(`       PPX_AUTH_TOKEN=${this.authToken}`);
-    console.log(`     用法: Authorization: Bearer ${this.authToken}`);
-    console.log("      (或设置 config/ppx.json 的 channels.http.auth_token)");
-    console.log("");
+    const r = resolveAuthToken({ configured: process.env.PPX_AUTH_TOKEN || "", persistedFile: this._persistedTokenFile });
+    this.authToken = r.token;
+    if (r.source === "persisted") {
+      console.log("  ℹ  HTTP 认证 token 复用自持久化文件 (重启不更换, 前端无需重贴)");
+    } else {
+      console.log("");
+      console.log("  ⚠️  HTTP 认证 token 未配置, 已自动生成并持久化 (重启复用):");
+      console.log(`       PPX_AUTH_TOKEN=${this.authToken}`);
+      console.log(`     用法: Authorization: Bearer ${this.authToken}`);
+      console.log(`     token 已保存到 ${this._persistedTokenFile}, 重启不再更换`);
+      console.log("      (或设置 config/ppx.json 的 channels.http.auth_token)");
+      console.log("");
+    }
     return this.authToken;
   }
 

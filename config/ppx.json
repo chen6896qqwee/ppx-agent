@@ -94,8 +94,7 @@
   },
   "selfheal": {
     "enabled": true,
-    "check_interval_ms": 60000,
-    "max_restart_attempts": 3
+    "check_interval_ms": 60000
   },
   "tools": {
     "enabled": true
