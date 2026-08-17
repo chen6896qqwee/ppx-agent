@@ -40,6 +40,12 @@ export class Legion extends EventEmitter {
         if (!line) continue;
         try {
           const msg = JSON.parse(line);
+          // step 中间事件: 触发 onProgress 回调, 不消费 pending (等最终 reply)
+          if (msg.type === "step" && msg.id && entry.pending.has(msg.id)) {
+            const p = entry.pending.get(msg.id);
+            if (p && p.onProgress) { try { p.onProgress(msg); } catch {} }
+            continue;
+          }
           if (msg.id && entry.pending.has(msg.id)) {
             const { resolve, reject } = entry.pending.get(msg.id);
             entry.pending.delete(msg.id);
@@ -61,16 +67,15 @@ export class Legion extends EventEmitter {
     return entry;
   }
 
-  // 向某 agent 发消息, 返回 Promise
-  send(name, msg) {
+  // 向某 agent 发消息, 返回 Promise (onProgress 可选: 接收 step 中间事件)
+  send(name, msg, { onProgress } = {}) {
     const entry = this.agents.get(name);
     if (!entry || entry.proc.exitCode !== null) {
       return Promise.reject(new Error(`agent ${name} 未运行`));
     }
     const id = ++entry.counter;
-    entry.pending.set(id, {});
     const promise = new Promise((resolve, reject) => {
-      entry.pending.set(id, { resolve, reject });
+      entry.pending.set(id, { resolve, reject, onProgress });
       entry.proc.stdin.write(JSON.stringify({ id, ...msg }) + "\n");
     });
     return promise;

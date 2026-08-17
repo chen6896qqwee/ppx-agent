@@ -130,6 +130,8 @@ export class PPXAgent {
   setNotify(cb) { this._notifyCb = typeof cb === "function" ? cb : null; }
   // P1#7: 工具调用过程可视化 - 回调 (tool名, 参数, 耗时, 状态) 供 Web UI 推送
   setToolEvent(cb) { this._onToolEvent = typeof cb === "function" ? cb : null; }
+  // turn/step 分层: 推理轮次事件 (每轮工具循环发一次 step), 供军团 worker 上报进度
+  setStepEvent(cb) { this._onStepEvent = typeof cb === "function" ? cb : null; }
   notify(message) { if (this._notifyCb) { try { this._notifyCb(String(message)); } catch (e) {} } }
   interrupt() { this._interrupted = true; }
   clearInterrupt() { this._interrupted = false; }
@@ -489,6 +491,7 @@ export class PPXAgent {
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       if (this._interrupted) return "[interrupted] task cancelled by operator.";
+      if (this._onStepEvent) { try { this._onStepEvent({ type: "step", round, maxRounds: MAX_TOOL_ROUNDS, ts: Date.now() }); } catch {} }
       const resp = await llmInstance.apiChat(messages, {
         tools,
         toolRunner: async (name, args) => this._runTool(name, args, llmInstance),
