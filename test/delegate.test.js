@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
 import { PPXAgent } from "../src/agent/index.js";
-import { buildArbitrationInput, arbitrate } from "../src/tools/delegate.js";
+import { buildArbitrationInput, arbitrate, parseReviewFindings, needsFix, buildReviewPrompt, buildFixPrompt } from "../src/tools/delegate.js";
 
 function tmp(n){ return fs.mkdtempSync(path.join(os.tmpdir(), `ppx-dl-${n}-`)); }
 
@@ -150,4 +150,158 @@ test("差异化视角注入 system prompt (_perspective)", () => {
     agent.shutdown();
     fs.rmSync(agent.dataDir, { recursive: true, force: true });
   }
+});
+
+// ===== SDD review 循环 (Superpowers 子代理驱动开发吸收) =====
+
+test("parseReviewFindings 解析严重级清单", () => {
+  const text = "[Critical] 功能不满足需求\n[Important] 缺边界检查\n[Minor] 命名可改进\n中间有干扰文字\n[Important] 第二处";
+  const f = parseReviewFindings(text);
+  assert.equal(f.length, 4, "只提取 [严重级] 行");
+  assert.equal(f[0].severity, "Critical");
+  assert.equal(f[0].finding, "功能不满足需求");
+  assert.equal(f[1].severity, "Important");
+});
+
+test("parseReviewFindings 无发现/空输入返回空数组", () => {
+  assert.deepEqual(parseReviewFindings("(无发现)"), []);
+  assert.deepEqual(parseReviewFindings(""), []);
+  assert.deepEqual(parseReviewFindings(null), []);
+  assert.deepEqual(parseReviewFindings("普通文字没有标签"), []);
+});
+
+test("needsFix 仅 Critical/Important 触发修复", () => {
+  assert.equal(needsFix([{ severity: "Critical", finding: "x" }]), true);
+  assert.equal(needsFix([{ severity: "Important", finding: "x" }]), true);
+  assert.equal(needsFix([{ severity: "Minor", finding: "x" }]), false);
+  assert.equal(needsFix([]), false);
+});
+
+test("buildReviewPrompt 含任务/准则/只读约束", () => {
+  const p = buildReviewPrompt("实现一个排序函数", "检查正确性与边界", "质量视角");
+  assert.ok(p.includes("只读审查"), "含只读约束");
+  assert.ok(p.includes("实现一个排序函数"), "含任务");
+  assert.ok(p.includes("检查正确性与边界"), "含审查准则");
+  assert.ok(p.includes("[Critical]"), "含严重级说明");
+});
+
+test("buildFixPrompt 只带 Critical/Important 发现", () => {
+  const p = buildFixPrompt("原始任务", [
+    { severity: "Critical", finding: "A" },
+    { severity: "Minor", finding: "B" },
+    { severity: "Important", finding: "C" },
+  ]);
+  assert.ok(p.includes("[Critical] A"), "含 Critical");
+  assert.ok(p.includes("[Important] C"), "含 Important");
+  assert.ok(!p.includes("Minor"), "不带 Minor");
+  assert.ok(p.includes("原始任务"), "含原始任务");
+});
+
+test("spawn_agent review: 审查通过直接返回产出 (mock legion)", async () => {
+  const agent = new PPXAgent({ root: tmp("revpass") });
+  agent.llm = { chat: async () => ({ content: "x" }) };
+  let reviewCalls = 0;
+  agent._legion = {
+    spawnAgent: () => {},
+    send: async (name) => {
+      if (name.includes("_rev_")) { reviewCalls++; return { reply: "(无发现)" }; }
+      return { reply: "完整实现结果" };
+    },
+  };
+  const res = await agent.tools.call("spawn_agent", { task: "写一个函数", review: true }, { agent });
+  assert.ok(res.includes("✅ 审查通过"), `审查通过标记, 实际: ${res}`);
+  assert.ok(res.includes("完整实现结果"), "含实施者产出");
+  assert.equal(reviewCalls, 1, "审查者只审一次");
+  agent.shutdown();
+  fs.rmSync(agent.dataDir, { recursive: true, force: true });
+});
+
+test("spawn_agent review: 发现问题自动修复一轮后通过", async () => {
+  const agent = new PPXAgent({ root: tmp("revfix") });
+  agent.llm = { chat: async () => ({ content: "x" }) };
+  let implCall = 0, revCall = 0;
+  agent._legion = {
+    spawnAgent: () => {},
+    send: async (name) => {
+      if (name.includes("_rev_")) {
+        revCall++;
+        return revCall === 1 ? { reply: "[Critical] 缺边界检查\n[Minor] 格式" } : { reply: "(无发现)" };
+      }
+      implCall++;
+      return { reply: implCall === 1 ? "v1 实现" : "v2 修复了边界" };
+    },
+  };
+  const res = await agent.tools.call("spawn_agent", { task: "写函数", review: true, fix_rounds: 3 }, { agent });
+  assert.ok(res.includes("✅ 审查通过"), `通过, 实际: ${res.slice(0, 80)}`);
+  assert.ok(res.includes("v2 修复了边界"), "实施者被要求修复并产出 v2");
+  assert.equal(implCall, 2, "实施者跑两次 (初版+修复)");
+  assert.equal(revCall, 2, "审查者审两次 (初版+复审)");
+  agent.shutdown();
+  fs.rmSync(agent.dataDir, { recursive: true, force: true });
+});
+
+test("spawn_agent review: 达修复上限熔断停放未决发现", async () => {
+  const agent = new PPXAgent({ root: tmp("revbreak") });
+  agent.llm = { chat: async () => ({ content: "x" }) };
+  let implCall = 0;
+  agent._legion = {
+    spawnAgent: () => {},
+    send: async (name) => {
+      if (name.includes("_rev_")) return { reply: "[Important] 一直存在的问题" };
+      implCall++;
+      return { reply: `实现第${implCall}版` };
+    },
+  };
+  const res = await agent.tools.call("spawn_agent", { task: "写函数", review: true, fix_rounds: 2 }, { agent });
+  assert.ok(res.includes("⚠️ 审查未通过"), "熔断标记");
+  assert.ok(res.includes("2 轮"), "标注修复上限轮数");
+  assert.ok(res.includes("[Important] 一直存在的问题"), "未决发现列出交主 agent 裁定");
+  assert.equal(implCall, 3, "初版 + 2 轮修复");
+  agent.shutdown();
+  fs.rmSync(agent.dataDir, { recursive: true, force: true });
+});
+
+test("spawn_agent review: 多任务时引导错误", async () => {
+  const agent = new PPXAgent({ root: tmp("revmulti") });
+  agent.llm = { chat: async () => ({ content: "x" }) };
+  agent._legion = { spawnAgent: () => {}, send: async () => ({ reply: "x" }) };
+  const res = await agent.tools.call("spawn_agent", { tasks: ["a", "b"], review: true }, { agent });
+  assert.ok(res.includes("仅支持单个 task"), `引导, 实际: ${res}`);
+  agent.shutdown();
+  fs.rmSync(agent.dataDir, { recursive: true, force: true });
+});
+
+test("spawn_agent 参数含 review/fix_rounds", () => {
+  const agent = new PPXAgent({ root: tmp("revreg") });
+  const meta = agent.tools.tools.get("spawn_agent");
+  assert.ok(meta.parameters.properties.review, "有 review 参数");
+  assert.ok(meta.parameters.properties.fix_rounds, "有 fix_rounds 参数");
+  agent.shutdown();
+  fs.rmSync(agent.dataDir, { recursive: true, force: true });
+});
+
+// ===== 只读审查者模式 =====
+
+test("enableReadonlyMode 禁用修改/执行工具, 保留只读工具", () => {
+  const agent = new PPXAgent({ root: tmp("readonly") });
+  agent.enableReadonlyMode();
+  assert.equal(agent.tools.tools.get("run_command").enabled, false, "run_command 禁用");
+  assert.equal(agent.tools.tools.get("write_file").enabled, false, "write_file 禁用");
+  assert.equal(agent.tools.tools.get("code_act").enabled, false, "code_act 禁用");
+  assert.equal(agent.tools.tools.get("spawn_agent").enabled, false, "spawn_agent 禁用");
+  assert.equal(agent.tools.tools.get("read_file").enabled, true, "read_file 保留");
+  assert.equal(agent.tools.tools.get("memory_search").enabled, true, "memory_search 保留");
+  assert.equal(agent.tools.tools.get("list_dir").enabled, true, "list_dir 保留");
+  assert.equal(agent.readonly, true, "readonly 标志");
+  agent.shutdown();
+  fs.rmSync(agent.dataDir, { recursive: true, force: true });
+});
+
+test("审查者只读: readonly 下 run_command 调用被拒", async () => {
+  const agent = new PPXAgent({ root: tmp("roexec") });
+  agent.enableReadonlyMode();
+  const res = await agent.tools.call("run_command", { command: "echo hi" }, { agent });
+  assert.ok(/未注册|未知工具|disabled|禁用/i.test(res), `readonly 下 run_command 被拒: ${res}`);
+  agent.shutdown();
+  fs.rmSync(agent.dataDir, { recursive: true, force: true });
 });

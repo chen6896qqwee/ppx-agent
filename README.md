@@ -14,7 +14,7 @@
 | 🔧 **32个内置工具** | 文件/命令/搜索/HTTP/定时/记忆检索/读图(多模态)/文档加载/文档入库/OCR/code_act(可选)/refine(失败→经验)/refine_skill(成功→技能) |
 | 🩺 **自我修复** | 启动体检、损坏JSON自动修复、崩溃恢复、残留清理 |
 | 📚 **自我学习** | 经验库 + 自动提炼用户画像/agent人格 + refine 失败轨迹闭环 + refineSkill 成功轨迹沉淀技能 |
-| 🤖 **多 Agent 军团** | 多进程并行 + DAG 编排 + legion 模式 (broadcast/dispatch/runDag) |
+| 🤖 **多 Agent 军团** | 多进程并行 + DAG 编排 + legion 模式 (broadcast/dispatch/runDag) + spawn_agent 自主协作 (并行/差异化视角/仲裁聚合/SDD 审查循环) |
 | 🔌 **多渠道接入** | HTTP(可用) + 飞书(已实现) + 微信(加解密+主动推送+加密回包, 已实现) |
 | 🖼️ **多模态读图** | 消息含图片路径自动读图注入 image_url 块 + 视觉路由到 vision provider (qwen-vl/gpt-4o/glm-4v 等) |
 | 📄 **文档加载 + RAG** | read_document 读 txt/md/pdf/html (零依赖 PDF 提取) + ingest_document 分块入库 + 可选 embedding 向量检索 |
@@ -23,7 +23,7 @@
 | ⌨️ **CLI 交互** | readline 历史(↑↓) + /stop 中断 + /reset 清会话 + Ctrl+C 单次中断 |
 | ✅ 上下文压缩 | 长对话自动滚动摘要, 防 token 失控 |
 | ✅ 错误自愈 | 工具错误统一语义, 自动重试修正 |
-| ✅ 方法型Skill | humanize去AI味 / write_article分阶段写作 / clarify需求澄清 |
+| ✅ 方法型Skill | humanize去AI味 / write_article分阶段写作 / clarify需求澄清 / brainstorm审批门禁 / plan精确计划 / verify验证优先 / debug五步调试 |
 | 🔌 **MCP 客户端** | 零依赖 MCP 客户端 (stdio + HTTP Streamable), 接入 9600+ MCP 工具服务器 |
 | ✅ 可观测 | 工具调用轨迹JSONL + 失败率/慢工具统计 |
 | ✅ LLM真摘要 | 长对话自动LLM语义摘要, 非堆叠 |

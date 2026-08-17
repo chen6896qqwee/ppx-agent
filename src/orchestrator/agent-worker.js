@@ -11,6 +11,12 @@ const agent = new PPXAgent({
   globalDataDir: process.env.PPX_AGENT_GLOBAL_DATA_DIR || undefined,
 });
 
+// 只读审查者模式 (SDD, Superpowers): 禁用一切修改/执行类工具, 只能读/查
+// 供 spawn_agent review 循环的审查者角色使用
+if (process.env.PPX_AGENT_READONLY === "1") {
+  agent.enableReadonlyMode();
+}
+
 // 从 stdin 读 JSON 行
 process.stdin.setEncoding("utf8");
 let buf = "";

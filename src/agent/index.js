@@ -156,6 +156,19 @@ export class PPXAgent {
   interrupt() { this._interrupted = true; }
   clearInterrupt() { this._interrupted = false; }
 
+  // 只读模式 (SDD 审查者, 吸收 Superpowers): 禁用一切修改/执行类工具, 只能读/查
+  // 供 spawn_agent review 循环的审查者角色 (worker 经 PPX_AGENT_READONLY=1 触发)
+  enableReadonlyMode() {
+    const disabled = [
+      "run_command", "write_file", "code_act", "create_skill",
+      "memory_add", "add_schedule", "remove_schedule",
+      "scene_create", "scene_describe", "spawn_agent", "refine_skill",
+    ];
+    for (const t of disabled) { try { this.tools.disable(t); } catch {} }
+    this.readonly = true;
+    return this;
+  }
+
   _loadConfig(configFile) {
     return loadConfig(this.root, configFile);
   }
