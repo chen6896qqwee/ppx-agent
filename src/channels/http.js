@@ -398,6 +398,17 @@ export class HttpChannel extends Channel {
 
   async send(to, text) { return text; } // HTTP 是请求-响应, 直接返回
 
+  // 连通性测试: 用独立实例起临时 server 验证端口可绑定
+  async test() {
+    try {
+      await this.connect();
+      await this.disconnect();
+      return { ok: true, detail: `HTTP 通道可启动: http://${this.host}:${this.port}` };
+    } catch (e) {
+      return { ok: false, detail: e.message };
+    }
+  }
+
   async disconnect() {
     if (this.server) { await new Promise((r) => this.server.close(r)); this.server = null; }
     this.connected = false;

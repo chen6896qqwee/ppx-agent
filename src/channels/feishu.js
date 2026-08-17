@@ -37,6 +37,41 @@ export class FeishuChannel extends Channel {
     return this;
   }
 
+  // 连通性测试: 用已配置凭证换取 tenant token (真实网络验证)
+  async test() {
+    if (!this.appId || !this.appSecret) {
+      return { ok: false, detail: "未配置 app_id + app_secret" };
+    }
+    try {
+      const token = await this._getTenantToken();
+      return { ok: true, detail: `飞书凭证有效 (tenant_token 获取成功, ${String(token).slice(0, 6)}...)` };
+    } catch (e) {
+      return { ok: false, detail: e.message };
+    }
+  }
+
+  // 把 /feishu/webhook 挂到 HTTP server (webhook 型通道)
+  mount(server) {
+    const orig = server.listeners("request")[0];
+    server.removeAllListeners("request");
+    server.on("request", async (req, res) => {
+      if (req.url === this.webhookPath && req.method === "POST") {
+        let body = "";
+        for await (const c of req) body += c;
+        try {
+          const out = await this.handleWebhook(body);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(out));
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+        return;
+      }
+      orig(req, res);
+    });
+  }
+
   // 处理飞书 webhook 事件 (事件订阅回调)
   async handleWebhook(body) {
     // 校验 verify_token

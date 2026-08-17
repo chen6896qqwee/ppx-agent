@@ -11,7 +11,8 @@
   "main": "src/agent/index.js",
   "bin": {
     "ppx": "src/cli.js",
-    "ppx-serve": "src/server.js"
+    "ppx-serve": "src/server.js",
+    "ppx-channels": "src/channels-cli.js"
   },
   "repository": {
     "type": "git",

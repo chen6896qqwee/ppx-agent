@@ -34,6 +34,41 @@ export class WechatWebhookChannel extends Channel {
     return this;
   }
 
+  // 连通性测试: 配置了主动推送凭据则验证 access_token; 仅回调模式返回提示
+  async test() {
+    if (!this.corpId || !this.corpSecret) {
+      return { ok: true, detail: "回调模式配置完整 (回调无法离线探测, 需公网/平台侧验证); 未配置主动推送凭据 (corp_id/corp_secret/agent_id)" };
+    }
+    try {
+      const token = await this._getAccessToken();
+      return { ok: true, detail: `企业微信推送通道通 (access_token 获取成功, ${String(token).slice(0, 6)}...)` };
+    } catch (e) {
+      return { ok: false, detail: e.message };
+    }
+  }
+
+  // 把 /wechat/webhook 挂到 HTTP server (webhook 型通道, 支持明文/加密回包)
+  mount(server) {
+    const orig = server.listeners("request")[0];
+    server.removeAllListeners("request");
+    server.on("request", async (req, res) => {
+      if (req.url === this.path && req.method === "POST") {
+        let body = "";
+        for await (const c of req) body += c;
+        try {
+          const out = await this.handleWebhook(body);
+          if (out.xml) { res.writeHead(200, { "Content-Type": "text/xml" }); res.end(out.xml); }
+          else { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(out)); }
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+        return;
+      }
+      orig(req, res);
+    });
+  }
+
   // 企业微信回调: URL query 带 msg_signature/timestamp/nonce; body 为 XML
   // 加密模式: 外层 XML 含 <Encrypt>, 解密得内层明文消息
   async handleWebhook(body, query = {}) {

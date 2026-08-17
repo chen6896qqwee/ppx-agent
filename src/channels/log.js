@@ -19,6 +19,10 @@ export class LogChannel extends Channel {
     return text;
   }
 
+  async test() {
+    return { ok: true, detail: "日志通道无需网络, 总是可用" };
+  }
+
   async disconnect() {
     this.connected = false;
   }

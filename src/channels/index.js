@@ -30,6 +30,7 @@ export class ChannelManager {
   }
 
   // 按注册表顺序启动所有启用的通道 (单个失败不影响其他)
+  // 流程: 全部 connect → 若 HTTP 通道在跑, 给 webhook 型通道挂载路由
   async start() {
     const started = [];
     for (const [name, Ctor] of Object.entries(this.channelTypes)) {
@@ -45,12 +46,42 @@ export class ChannelManager {
         console.warn(`[channels] ${name} 通道启动失败: ${e.message}`);
       }
     }
+    // webhook 型通道挂到 HTTP server (若已启动)
+    if (this.httpServer) {
+      for (const ch of this.channels) {
+        if (ch.name !== "http" && typeof ch.mount === "function") {
+          try { ch.mount(this.httpServer); } catch (e) { console.warn(`[channels] ${ch.name} webhook 挂载失败: ${e.message}`); }
+        }
+      }
+    }
     return started;
   }
 
   // 按 name 取已启动通道 (无则 null)
   get(name) {
     return this.channels.find((c) => c.name === name) || null;
+  }
+
+  // 列出所有可配置通道的状态 (含未启用的), 供 CLI/UI 展示
+  list() {
+    return Object.entries(this.channelTypes).map(([name, Ctor]) => {
+      const cfg = this.config[name] || {};
+      return { name, enabled: isEnabled(name, cfg), connected: !!this.get(name) };
+    });
+  }
+
+  // 连通性测试: 用独立实例验证某通道配置 (不干扰已启动的通道)
+  async test(name) {
+    const Ctor = this.channelTypes[name];
+    if (!Ctor) return { ok: false, detail: `未知通道类型: ${name}` };
+    const cfg = { ...(this.config[name] || {}) };
+    try {
+      const ch = new Ctor(this.agent, cfg);
+      const r = typeof ch.test === "function" ? await ch.test() : await ch.connect();
+      return typeof r === "object" && r !== null ? r : { ok: true, detail: String(r) };
+    } catch (e) {
+      return { ok: false, detail: e.message };
+    }
   }
 
   // 广播到所有已启动通道 (主动提醒/系统消息投递入口)
