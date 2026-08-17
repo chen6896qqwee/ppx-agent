@@ -19,6 +19,11 @@ export async function startServer({ root = process.cwd(), port = 8899, host = "1
   const manager = new ChannelManager(agent, channelsCfg);
   await manager.start();
 
+  // 主动提醒 → 广播到所有已启用通道 (agent.proactive.enabled 才接; 默认关不打扰)
+  if (agent.config.agent?.proactive?.enabled) {
+    agent.startProactiveTicker((payload) => manager.broadcast(payload.text));
+  }
+
   const server = manager.httpServer;
   return {
     agent,

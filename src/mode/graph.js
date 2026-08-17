@@ -14,7 +14,7 @@ export function normalizeNodes(workflow) {
 
 export async function graphExecutor(agent, userMsg, { sessionKey = "default", workflow = null } = {}) {
   if (!agent.llm) {
-    return (await agent._localIntent(userMsg)) || "[皮皮虾] 未配置模型 provider。";
+    return (await agent._localIntent(userMsg)) || "[皮皮虾] 未配置模型 provider (配置见 docs/QUICKSTART.md 第 3 节)。";
   }
   // workflow 来源: opts 传入 > config.agent.workflow > 默认单节点
   const raw = workflow || (agent.config.agent && agent.config.agent.workflow) || [userMsg];

@@ -23,6 +23,12 @@ const TOOL_RESULT_BUDGET = 4000; // L4 toolResultBudget: 工具结果超过此�
 const MAX_TOOL_ERROR_RETRY = 2;
 // 会话历史条数/token 预算已迁到 config.memory (max_history_items / history_token_budget)
 
+// LLM 调用失败的兜底提示: 附排查指引, 避免裸抛错误对用户不友好
+export function LLM_FAILED_HINT(message) {
+  return `[皮皮虾] LLM 调用失败: ${message}
+排查指引: 1) 检查 config/ppx.json 的 providers 是否配置了可用的 API key (export XXX_API_KEY=...); 2) 本地模型 (lmstudio) 是否在运行; 3) 启动 ppx-serve 看日志确认模型加载。`;
+}
+
 // 估算 token: 中文字符约1字=0.6token, 1token约4字符
 function estimateTokens(s){ return Math.ceil(String(s||'').length / 1.6); }
 
@@ -380,7 +386,7 @@ export class PPXAgent {
         reply = await this.ctx.consume("modes").run(modeName, this, userMsg, { sessionKey });
       } catch (e) {
         error("LLM 调用失败:", e.message);
-        reply = `[皮皮虾] LLM 调用失败: ${e.message}`;
+        reply = LLM_FAILED_HINT(e.message);
       }
     }
 

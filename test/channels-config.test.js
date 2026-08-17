@@ -10,6 +10,9 @@ import {
   CHANNEL_SCHEMAS,
 } from "../src/config/channels.js";
 import { ChannelManager, BUILTIN_CHANNEL_TYPES } from "../src/channels/index.js";
+import { FeishuChannel } from "../src/channels/feishu.js";
+import { WechatWebhookChannel } from "../src/channels/wechat.js";
+import { Channel } from "../src/channels/base.js";
 
 function tmpRoot(n) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `ppx-chcfg-${n}-`));
@@ -106,4 +109,36 @@ test("channels 统一: 内置类型注册表包含全部 schema", () => {
   for (const name of Object.keys(CHANNEL_SCHEMAS)) {
     assert.ok(BUILTIN_CHANNEL_TYPES[name], `注册表含 ${name}`);
   }
+});
+
+// ---- 主动提醒 → 通道端到端 ----
+test("主动提醒: 飞书 send('*') 回最近联系人 (lastUser)", () => {
+  const ch = new FeishuChannel({}, {});
+  assert.equal(ch._resolveTarget("*"), null, "无 lastUser 时报缺接收人");
+  ch.lastUser = "ou_123";
+  assert.equal(ch._resolveTarget("*"), "ou_123");
+  assert.equal(ch._resolveTarget("ou_abc"), "ou_abc");
+});
+
+test("主动提醒: 微信收到消息后记录 lastUser", async () => {
+  const ch = new WechatWebhookChannel({ chat: async () => "收到" }, {});
+  await ch._replyFromXml(`<xml><FromUserName><![CDATA[user_99]]></FromUserName><Content><![CDATA[你好]]></Content></xml>`);
+  assert.equal(ch.lastUser, "user_99", "收到消息记录最近联系人");
+});
+
+test("主动提醒: broadcast 把文本广播到所有已启用通道", async () => {
+  class FakeChannel extends Channel {
+    constructor(agent, cfg = {}) { super("fake", agent); this.sent = []; }
+    async connect() { this.connected = true; return this; }
+    async send(to, text) { this.sent.push({ to, text }); return text; }
+  }
+  const root = tmpRoot("bc");
+  const agent = new PPXAgent({ root });
+  const mgr = new ChannelManager(agent, { fake: { enabled: true }, http: { enabled: false } }, { fake: FakeChannel });
+  await mgr.start();
+  await mgr.broadcast("【主动提醒】明天提交周报");
+  assert.deepEqual(mgr.get("fake").sent, [{ to: "*", text: "【主动提醒】明天提交周报" }]);
+  await mgr.stop();
+  agent.shutdown();
+  fs.rmSync(agent.dataDir, { recursive: true, force: true });
 });

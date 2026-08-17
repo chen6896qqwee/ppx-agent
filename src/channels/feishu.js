@@ -12,6 +12,13 @@ export class FeishuChannel extends Channel {
     this.webhookPath = webhookPath;
     this.tenantToken = null;
     this.tokenExpire = 0;
+    this.lastUser = null; // 最近收到消息的 open_id, 供主动提醒(广播)回发
+  }
+
+  // 主动提醒广播 (to="*") 时回最近联系人; 无记录则报缺接收人
+  _resolveTarget(to) {
+    const target = !to || to === "*" ? this.lastUser : to;
+    return target || null;
   }
 
   async _getTenantToken() {
@@ -88,20 +95,23 @@ export class FeishuChannel extends Channel {
     if (event && event.type === "im.message.receive_v1" && event.message) {
       const text = event.message.content ? JSON.parse(event.message.content).text || "" : "";
       const openId = event.sender?.sender_id?.open_id || "";
+      if (openId) this.lastUser = openId; // 记录最近联系人, 供主动提醒回发
       if (text) {
         const reply = await this.agent.chat(text);
-        await this.send(openId, reply);
+        await this.send(openId || "*", reply);
       }
     }
     return { code: 0 };
   }
 
   async send(to, text) {
+    const target = this._resolveTarget(to);
+    if (!target) throw new Error("飞书主动推送缺接收人: 先收到过一条用户消息记录 open_id, 或用 send(openId, ...)");
     const token = await this._getTenantToken();
     const r = await fetch("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-      body: JSON.stringify({ receive_id: to, msg_type: "text", content: JSON.stringify({ text }) }),
+      body: JSON.stringify({ receive_id: target, msg_type: "text", content: JSON.stringify({ text }) }),
     });
     const data = await r.json();
     if (data.code !== 0) throw new Error(`飞书发送失败: ${data.msg}`);

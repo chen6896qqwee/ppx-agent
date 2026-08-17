@@ -27,6 +27,7 @@ export class WechatWebhookChannel extends Channel {
     this.agentId = agentId || process.env.WECHAT_AGENT_ID || "";
     this.accessToken = null;
     this.tokenExpire = 0;
+    this.lastUser = null; // 最近收到消息的用户 ID, 供主动提醒(广播)回发
   }
 
   async connect() {
@@ -115,6 +116,7 @@ export class WechatWebhookChannel extends Channel {
     if (!text) return { error: "无文本内容" };
     const reply = await this.agent.chat(text);
     const toUser = g("FromUserName");
+    if (toUser) this.lastUser = toUser; // 记录最近联系人, 供主动提醒回发
     const fromUser = g("ToUserName");
     return {
       xml: `<xml>
@@ -144,17 +146,19 @@ export class WechatWebhookChannel extends Channel {
     return this.accessToken;
   }
 
-  // 主动推送 (企业微信应用消息): 需 corp_id + corp_secret + agent_id
+  // 主动推送 (企业微信应用消息): 需 corp_id + corp_secret + agent_id; to="*" 时回最近联系人
   async send(to, text) {
     const token = await this._getAccessToken();
     if (!this.agentId) {
       throw new Error("微信主动推送未配置 agent_id (config.channels.wechat.agent_id 或环境变量 WECHAT_AGENT_ID)");
     }
+    const target = !to || to === "*" ? this.lastUser : to;
+    if (!target) throw new Error("微信主动推送缺接收人: 先收到过一条用户消息记录用户 ID, 或用 send(userId, ...)");
     const r = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        touser: String(to),
+        touser: String(target),
         msgtype: "text",
         agentid: Number(this.agentId),
         text: { content: String(text) },

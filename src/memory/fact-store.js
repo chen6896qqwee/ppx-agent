@@ -3,6 +3,11 @@
 import path from "node:path";
 import { ensureDir, readJson, writeJson, nowISO, logicalDay } from "../utils/store.js";
 
+// 记忆动词前缀: 去重时剔除, 让"记住：X"与"X"视为同一条 (防 LLM 提炼版与原文冗余)
+const MEMORY_VERB_PREFIXES = [
+  /^(请记住|请记得|记得要|记住要|要记住|请牢记|别忘了|记住|记得|用户说|用户提到|提醒你)[:：\s，,、]*/,
+];
+
 export class FactStore {
   constructor(dataDir, opts = {}) {
     this.dir = path.join(dataDir, "memory");
@@ -48,13 +53,23 @@ export class FactStore {
     return String(s || "").trim().replace(/\s+/g, " ");
   }
 
+  // 查重键: 在 _norm 基础上去掉"记忆动词前缀"和尾部标点, 让
+  // 原文「记住：老板的生日是 10 月 1 日」与 LLM 提炼的「老板的生日是 10 月 1 日」判定为同一条, 防冗余
+  // 只去记忆类动词, 不碰普通句子, 避免误合并
+  _normKey(s) {
+    let k = this._norm(s);
+    for (const re of MEMORY_VERB_PREFIXES) k = k.replace(re, "");
+    return k.replace(/[。！？!?；;，,]+$/, "");
+  }
+
   add(content, { importance = this.opts.baseImportance, type = "general", source = "manual", dedupe = true, scope = null, meta = null } = {}) {
     const norm = this._norm(content);
     if (!norm) return null;
     const now = nowISO();
     if (dedupe) {
-      // 内容去重: 相同内容已存在则命中加分, 不新增
-      const existing = this.facts.find((f) => this._norm(f.content) === norm);
+      // 内容去重: 归一化后相同 (含"记住："等前缀差异) 已存在则命中加分, 不新增
+      const normKey = this._normKey(content);
+      const existing = this.facts.find((f) => this._normKey(f.content) === normKey);
       if (existing) {
         existing.hits += 1;
         existing.lastAccess = now;

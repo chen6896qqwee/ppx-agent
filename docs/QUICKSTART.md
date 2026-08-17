@@ -6,10 +6,9 @@
 
 | 项目 | 要求 |
 |------|------|
-| Node.js | `>=22.22.3` 且避开 `23.x` / `24.0-24.14`（推荐 26.x） |
-| npm | 随 Node 自带 |
+| Node.js | `>=20` |
 
-> 为什么这么挑版本？默认底座 OpenClaw 引擎要求这些下限。如果你只用纯 HTTP 模型（OpenAI/DeepSeek/通义），Node 20 也能跑，但官方支持矩阵如上。
+> 纯 HTTP 模型（OpenAI/DeepSeek/通义）Node 20 就能跑。openclaw 可选引擎有运行时版本检测，不满足会自动降级提示。
 
 ## 2. 安装
 
@@ -18,8 +17,9 @@
 ```bash
 npm install -g ppx-agent
 
-ppx        # 进入对话 CLI
-ppx-serve  # 启动 HTTP 服务 (http://127.0.0.1:8899)
+ppx            # 进入对话 CLI
+ppx-serve      # 启动 HTTP 服务 (http://127.0.0.1:8899)
+ppx-channels   # 通道自助管理 (list/add/test/enable/disable/remove)
 ```
 
 ### 方式 B：源码运行（需要 Web UI 或二次开发）
@@ -96,7 +96,23 @@ npm run web         # 一条命令同时起内核(8899) + 前端(3000)
 
 打开 http://localhost:3000 。前端通过代理自动连到本机 8899 内核。
 
-## 5. 可选引擎（OpenClaw / DeepSeek Harness）
+## 5. 通道（消息接入 + 主动提醒投递）
+
+皮皮虾所有通道统一走 `ChannelManager` 注册表，用 `ppx-channels` 命令自助连接（不改源码）：
+
+```bash
+ppx-channels list                     # 查看全部通道 + 启用状态
+ppx-channels add feishu               # 交互式引导配置 → 写盘并启用
+ppx-channels test feishu              # 连通性测试（真实网络探测）
+ppx-channels enable|disable <name>    # 启停
+ppx-channels remove <name>            # 移除配置（恢复默认）
+```
+
+内置通道类型：`http`（默认开）/ `feishu` / `wechat` / `log`（dummy 输出到 stdout，适合先验证主动提醒契约）。
+
+> 配置写在 `config/ppx.json` 的 `channels` 段，改完重启 `ppx-serve` 生效。主动提醒（`agent.proactive.enabled`）默认关闭，开启后定时把待办提醒广播到所有已启用通道。
+
+## 6. 可选引擎（OpenClaw / DeepSeek Harness）
 
 默认纯 HTTP 模型开箱即用。`config/ppx.json` 里 openclaw/dsh 已作为 `_optional_engines` 注释配置保留（默认不启用）。想切换时，把对应对象移入 `providers` 数组即可：
 
@@ -117,9 +133,10 @@ export PPX_DSH_ROOT="/path/to/deepseek-harness"
 
 或在 config 对应 provider 里直接填 `mjs` / `dsh_root` 字段。
 
-## 6. 常见问题
+## 7. 常见问题
 
 - **`OpenClaw 引擎未就绪: mjs 路径不存在`** → 设 `PPX_OPENCLAW_MJS`，或改用 HTTP 模型。
 - **`dsh 源码未就绪`** → 设 `PPX_DSH_ROOT` 指向 clone 好的 deepseek-harness。
 - **端口被占** → 内核端口用 `PPX_PORT` 改；Web UI 端口在 `web/package.json` 的 `start` 里加 `-p`。
-- **数据存哪** → 运行数据（记忆/会话/经验）写在 `data/` 目录，源码运行时在仓库根，npm 安装时在包目录内。
+- **数据存哪** → 运行数据（记忆/会话/经验）默认在 `data/`（源码运行时）或 `~/.ppx`（npm 全局安装时自动外置，防卸载丢数据）；可用 `PPX_DATA_DIR` 显式指定。
+- **LLM 报错** → 检查 `config/ppx.json` 的 `providers` 是否配置了可用的 API key（`export XXX_API_KEY=...`），或 `ppx-channels` 无关；可先跑 `ppx-serve` 看启动日志确认模型加载。

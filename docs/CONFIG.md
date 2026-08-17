@@ -40,6 +40,9 @@ npm run chat
 | `mode` | react | 编排模式：react / single / plan-exec / router / blackboard / graph / legion |
 | `citation_rule` | 引用规则 | 让 LLM 引用来源的规则文本 |
 | `system_extra` | "" | 追加的 system prompt 内容 |
+| `values` | 4 条默认 | **核心价值（ANS 价值对齐）**，注入 system 最前（【核心价值·不可违背】），自定义数组直接覆盖默认 |
+| `proactive.enabled` | false | **主动任务生成**开关（默认关防打扰），开启后定时扫描记忆生成主动提醒 |
+| `proactive.interval_ms` | 3600000 | 主动提醒间隔（毫秒） |
 
 ## user
 
@@ -93,11 +96,17 @@ npm run chat
 
 ## channels（通道）
 
+统一走 `ChannelManager` 注册表，推荐用 `ppx-channels` 命令自助配置（交互式引导 + 连通性测试），配置最终落在这里。
+
 | 字段 | 说明 |
 |------|------|
-| `http.enabled` / `http.port` / `http.auth_token` | HTTP 通道（空 token 时启动自动生成随机 token） |
-| `feishu.*` | 飞书通道（appId/appSecret/verifyToken） |
-| `wechat.*` | 企业微信通道（token/encodingAESKey/corpId/corpSecret/agentId） |
+| `http.enabled` / `http.port` / `http.host` / `http.auth_token` | HTTP 通道（空 token 时启动自动生成随机 token） |
+| `feishu.appId` / `appSecret` / `verifyToken` / `webhookPath` | 飞书通道（事件订阅回调） |
+| `wechat.path` / `token` / `encodingAESKey` | 企业微信回调（收消息） |
+| `wechat.corpId` / `corpSecret` / `agentId` | 企业微信主动推送（发消息） |
+| `log.enabled` / `log.target` | 日志 dummy 通道（输出到 stdout，验证主动提醒契约用） |
+
+每个通道的 `test()` 做真实连通性探测：`ppx-channels test <name>`（如飞书实际换取 tenant_token）。
 
 ## security（安全）
 
@@ -112,6 +121,7 @@ npm run chat
 | 变量 | 说明 |
 |------|------|
 | `PPX_DATA_DIR` | 数据目录（记忆/会话/经验落盘位置，覆盖默认 root/data） |
+| `PPX_AGENT_GLOBAL_DATA_DIR` | 全局共享数据目录（跨 agent 经验库，默认同 dataDir） |
 | `PPX_AUTH_TOKEN` | HTTP 认证 token |
 | `PPX_PORT` | HTTP 端口 |
 | `PPX_OPENCLAW_MJS` | openclaw 引擎路径 |

@@ -26,6 +26,8 @@
     "web": "node scripts/start-web.js",
     "web:build": "npm run build --prefix web",
     "release": "node scripts/release.js",
+    "eval": "node scripts/eval.js",
+    "bench": "node scripts/bench.js",
     "test": "node --test",
     "prepublishOnly": "npm test"
   },

@@ -42,7 +42,7 @@ export async function buildMessages(agent, userMsg, sessionKey = "default") {
 // ReAct: 推理-行动-观察循环 (带工具, 默认模式)
 async function reactExecutor(agent, userMsg, { sessionKey = "default" } = {}) {
   if (!agent.llm) {
-    return (await agent._localIntent(userMsg)) || "[皮皮虾] 未配置模型 provider，仅本地记忆 + 工具模式。";
+    return (await agent._localIntent(userMsg)) || "[皮皮虾] 未配置模型 provider，仅本地记忆 + 工具模式 (配置见 docs/QUICKSTART.md 第 3 节)。";
   }
   const messages = await buildMessages(agent, userMsg, sessionKey);
   return agent._llmWithFallback(messages);
@@ -50,7 +50,7 @@ async function reactExecutor(agent, userMsg, { sessionKey = "default" } = {}) {
 
 // 单Agent: 纯 LLM 对话, 不挂工具 (省 token, 适合纯问答/闲聊)
 async function singleExecutor(agent, userMsg, { sessionKey = "default" } = {}) {
-  if (!agent.llm) return "[皮皮虾] 未配置模型 provider。";
+  if (!agent.llm) return "[皮皮虾] 未配置模型 provider (配置见 docs/QUICKSTART.md 第 3 节)。";
   const messages = await buildMessages(agent, userMsg, sessionKey);
   const r = await agent.llm.chat(messages);
   return r.content;
