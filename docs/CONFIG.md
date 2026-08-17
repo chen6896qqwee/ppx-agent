@@ -115,6 +115,9 @@ npm run chat
 | `allow_all` | false | 放开命令白名单（危险） |
 | `command_timeout_ms` | 30000 | 命令执行超时 |
 | `code_act` | false | CodeAct 脚本出口（默认关闭，需显式开启） |
+| `deny` | [] | 用户自定义拦截规则（glob 风格，如 `"git push --force*"`），命中后即使 `allow_all` 也拒绝 |
+
+命令守卫三层防线（吸收 Hermes approval 机制）：**用户 `deny` 规则 → 硬黑名单（`rm -rf /`、fork bomb、写裸设备、`curl|sh` 等，`allow_all` 也拦）→ 常规高危黑名单 + 前缀白名单**。检测前先做反混淆规范化（去引号/合并空白），`rm ""-rf /` 这类引号技巧无法绕过。命中拦截会提示 agent 不要重试或改写绕过。
 
 ## 环境变量
 

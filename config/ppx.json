@@ -117,6 +117,7 @@
   },
   "security": {
     "allow_all": false,
-    "command_timeout_ms": 30000
+    "command_timeout_ms": 30000,
+    "deny": []
   }
 }

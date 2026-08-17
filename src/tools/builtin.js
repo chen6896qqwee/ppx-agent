@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { scrubPII } from "../utils/pii.js";
 import { LocalShellProvider } from "../seam/shell.js";
+import { checkCommand, DENY_HINT } from "./command-guard.js";
 
 const execFileP = promisify(execFile);
 
@@ -27,35 +28,9 @@ export function imageFileToDataUrl(rootDir, p, { maxBytes = 8 * 1024 * 1024 } = 
   return `data:${mime};base64,${buf.toString("base64")}`;
 }
 
-// ---- run_command 安全策略 (P0) ----
-const DEFAULT_DENY = [
-  /delete|erase|rmdir|rd \/s|deltree/i,
-  /format\s/i, /mkfs/i, /fdisk/i, /diskpart/i, /shutdown/i,
-  /restart/i, /reboot/i, /halt/i, /poweroff/i,
-  /reg\s+delete/i, /taskkill/i, /pkill/i, /kill\s+-9/i,
-  /rm\s+-rf/i, /rm\s+-fr/i,
-  /curl|wget|Invoke-WebRequest|iwr/i,
-  /git\s+push.*--force/i, /git\s+reset.*--hard/i,
-];
-const DEFAULT_ALLOW_PREFIX = [
-  "git", "npm", "npx", "yarn", "pnpm", "node", "python", "python3",
-  "ls", "dir", "pwd", "cat", "type", "echo", "head", "tail", "grep",
-  "find", "wc", "cp", "copy", "mv", "move", "mkdir", "touch", "tree",
-  "cd", "help", "ipconfig", "netstat", "tasklist", "whoami", "date", "time", "tsc",
-];
-
-function isDeniedCommand(cmd, options) {
-  const deny = (options && options.denyList) || DEFAULT_DENY;
-  for (const re of deny) if (re.test(cmd)) return true;
-  return false;
-}
-
-function isAllowedCommand(cmd, options) {
-  if (options && options.allowAll) return true;
-  const allowPrefix = (options && options.allowPrefix) || DEFAULT_ALLOW_PREFIX;
-  const first = cmd.trim().split(/[\s|&;>]+/)[0];
-  return allowPrefix.some((a) => (first.toLowerCase().replace(/\.exe$/i, "") === a.toLowerCase()));
-}
+// ---- run_command 安全策略 (P0): 统一走命令守卫 (src/tools/command-guard.js) ----
+// 三层防线: 用户 deny(security.deny) -> 硬黑名单(allow_all 也拦) -> 常规高危 + 前缀白名单
+// 命令守卫的 isDeniedCommand/isAllowedCommand 兼容导出见 command-guard.js
 
 // 安全路径: 阻止逃出工作目录 (防路径穿越)
 function safePath(root, p) {
@@ -188,11 +163,9 @@ export function registerBuiltinTools(catalog, { rootDir, facts, memory }) {
       const cmd = String(args.command || "").trim();
       if (!cmd) return JSON.stringify({ error: "空命令" });
       const opts = (ctx && ctx.agent && ctx.agent.config && ctx.agent.config.security) || {};
-      if (isDeniedCommand(cmd, opts)) {
-        return JSON.stringify({ error: "命令被拒绝: 命中高危黑名单 (delete/format/shutdown/curl等). 如需放行配置 security 白名单." });
-      }
-      if (!isAllowedCommand(cmd, opts)) {
-        return JSON.stringify({ error: "命令不在白名单: " + cmd.split(/[\s|&;>]+/)[0] + ". 允许: git/npm/node/python/cat/cp/mkdir 等, 或设置 security.allow_all." });
+      const guard = checkCommand(cmd, opts);
+      if (!guard.ok) {
+        return JSON.stringify({ error: guard.reason + DENY_HINT });
       }
       // 通过 shell seam 调用 (可替换 provider: 本地/沙箱/Docker), 换 provider 即换执行环境
       const shell = (ctx?.agent?.ctx && ctx.agent.ctx.consume("shell")) || defaultShell;
@@ -224,7 +197,9 @@ export function registerBuiltinTools(catalog, { rootDir, facts, memory }) {
       if (!["python", "node"].includes(lang)) return JSON.stringify({ error: "language 仅支持 python/node" });
       const code = String(args.code || "");
       if (!code) return JSON.stringify({ error: "空代码" });
-      if (isDeniedCommand(code, sec)) return JSON.stringify({ error: "代码命中高危黑名单 (delete/format/shutdown等)" });
+      // code_act 是脚本体: 只做 deny 检查 (硬黑名单 + 用户 deny + 常规高危), 不做前缀白名单 (脚本无"命令前缀")
+      const guard = checkCommand(code, { ...sec, allowAll: true });
+      if (!guard.ok) return JSON.stringify({ error: guard.reason + DENY_HINT });
       return runCodeAct(rootDir, lang, code, sec.command_timeout_ms);
     },
   });
