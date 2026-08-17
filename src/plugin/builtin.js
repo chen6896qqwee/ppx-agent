@@ -22,9 +22,9 @@ import { blackboardExecutor } from "../mode/blackboard.js";
 import { graphExecutor } from "../mode/graph.js";
 import { legionExecutor } from "../mode/legion.js";
 
-// ---- 纯函数: LLM 解析 (从 agent 抽出, 修复 deepseek 后端识别) ----
+// ---- 纯函数: LLM 解析 (agent/热重载/插件共用, 只此一份) ----
 // 判断 provider 是否可用: 有 api_key / 本地服务 / openclaw 或 deepseek 底座
-function _isUsable(prov) {
+export function isUsableProvider(prov) {
   const key = prov.api_key || process.env[prov.api_key_env];
   const isLocal = /127\.0\.0\.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
   const isOpenclaw = prov.backend === "openclaw" || prov.id === "openclaw";
@@ -32,14 +32,14 @@ function _isUsable(prov) {
   return !!(key || isLocal || isOpenclaw || isDeepseek);
 }
 
-function resolveAllLLMs(config) {
+export function resolveAllLLMs(config) {
   const provs = (config && config.providers) || [];
-  return provs.filter(_isUsable).map((p) => new LLMClient(p));
+  return provs.filter(isUsableProvider).map((p) => new LLMClient(p));
 }
 
-function resolveLLM(config) {
+export function resolveLLM(config) {
   const provs = (config && config.providers) || [];
-  const p = provs.find(_isUsable);
+  const p = provs.find(isUsableProvider);
   return p ? new LLMClient(p) : null;
 }
 

@@ -50,6 +50,7 @@ export const DEFAULT_CONFIG = {
     http: { enabled: true, port: 8899, auth_token: "" },
     feishu: { enabled: false, appId: "", appSecret: "", verifyToken: "" },
     wechat: { enabled: false, path: "/wechat/webhook", token: "", encodingAESKey: "", corpId: "", corpSecret: "", agentId: "" },
+    log: { enabled: false, target: "console" },
   },
   security: { allow_all: false, command_timeout_ms: 30000, code_act: false },
 };

@@ -26,7 +26,7 @@ async function planSteps(agent, userMsg) {
 
 export async function planExecExecutor(agent, userMsg, { sessionKey = "default", maxSteps = 6 } = {}) {
   if (!agent.llm) {
-    return (await agent._offlineToolRoute(userMsg)) || "[皮皮虾] 未配置模型 provider。";
+    return (await agent._localIntent(userMsg)) || "[皮皮虾] 未配置模型 provider。";
   }
   // 1. 规划
   const steps = (await planSteps(agent, userMsg)).slice(0, maxSteps);

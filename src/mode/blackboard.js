@@ -22,7 +22,7 @@ const DEFAULT_EXPERTS = [
 
 export async function blackboardExecutor(agent, userMsg, { sessionKey = "default", experts = null } = {}) {
   if (!agent.llm) {
-    return (await agent._offlineToolRoute(userMsg)) || "[皮皮虾] 未配置模型 provider。";
+    return (await agent._localIntent(userMsg)) || "[皮皮虾] 未配置模型 provider。";
   }
   const board = new Board();
   board.set("task", String(userMsg));

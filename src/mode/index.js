@@ -42,7 +42,7 @@ export async function buildMessages(agent, userMsg, sessionKey = "default") {
 // ReAct: 推理-行动-观察循环 (带工具, 默认模式)
 async function reactExecutor(agent, userMsg, { sessionKey = "default" } = {}) {
   if (!agent.llm) {
-    return (await agent._offlineToolRoute(userMsg)) || "[皮皮虾] 未配置模型 provider，仅本地记忆 + 工具模式。";
+    return (await agent._localIntent(userMsg)) || "[皮皮虾] 未配置模型 provider，仅本地记忆 + 工具模式。";
   }
   const messages = await buildMessages(agent, userMsg, sessionKey);
   return agent._llmWithFallback(messages);

@@ -7,15 +7,15 @@ import { TOOL_ERROR_PREFIX } from "../tools/index.js";
 import { imageFileToDataUrl } from "../tools/builtin.js";
 import { logicalDay } from "../utils/store.js";
 import { loadConfig } from "../config/index.js";
-import { LLMClient } from "../llm/client.js";
 import { info, warn, error } from "../utils/logger.js";
 import { Context, compose, loadPlugins } from "../plugin/index.js";
-import { builtinPlugins } from "../plugin/builtin.js";
+import { builtinPlugins, resolveLLM, resolveAllLLMs } from "../plugin/builtin.js";
 import { registerMcpTools } from "../mcp/index.js";
 import { buildCompactionMessages, transcriptToText } from "../memory/compaction.js";
-
-// 热重载用 LLM 客户端构造 (与 plugin/builtin.llmPlugin 行为一致)
-const LLMClientForReload = LLMClient;
+// ANS 独立模块 (可更换): 价值对齐 / 自主任务生成 / 生命周期
+import { Lifecycle } from "../ans/lifecycle.js";
+import { valuesPrompt } from "../ans/values.js";
+import { suggestProactive } from "../ans/proactive.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const MAX_TOOL_ROUNDS = 8;
@@ -118,8 +118,8 @@ export class PPXAgent {
     this._mcp = null; // MCP 连接句柄 (connectMcp 后赋值)
     this._personaBuilt = null; // L3 画像上次生成日期 (跨天刷新)
     this._proactiveTimer = null; // 主动任务生成定时器
-    // 生命周期 (ANS): born → growing → mature → evolving; 繁衍: reproducing
-    this.lifecycle = { stage: "born", bornAt: Date.now(), chats: 0, evolved: 0, reproduced: 0, log: [] };
+    // 生命周期 (ANS 独立模块): born → growing → mature → evolving / reproducing
+    this.lifecycle = new Lifecycle();
 
     // 可选: 启动时自动连接 MCP 服务器 (config.mcp.auto_connect = true 时非阻塞连接)
     if (this.config.mcp?.auto_connect && this.config.mcp.servers?.length) {
@@ -324,11 +324,9 @@ export class PPXAgent {
     return [values, baseCtx, citation, extra].filter(Boolean).join("\n\n");
   }
 
-  // 核心价值文本: 数组 → 固定格式注入 (无值时不注入, 向后兼容)
+  // 核心价值文本 (委托 ans/values 模块): 数组 → 固定格式注入 (无值时不注入, 向后兼容)
   _valuesPrompt() {
-    const values = this.config.agent?.values;
-    if (!Array.isArray(values) || !values.length) return "";
-    return "【核心价值·不可违背】\n" + values.map((v) => "- " + v).join("\n");
+    return valuesPrompt(this.config.agent?.values);
   }
 
   // L3 画像注入: 已生成的用户画像 + agent 自我画像 (未生成返回 "")
@@ -404,34 +402,14 @@ export class PPXAgent {
     return reply;
   }
 
-  // 生命周期: 对话计数 + 阶段转换 (ANS: 诞生→成长→成熟)
+  // 生命周期: 每次对话计数 + 阶段转换 (委托 ans/lifecycle 模块)
   _lifecycleTick() {
-    this.lifecycle.chats += 1;
-    const lc = this.lifecycle;
-    if (lc.stage === "born") { this._lifecycleTo("growing", "首次对话"); }
-    else if (lc.stage === "growing" && lc.chats >= 10) { this._lifecycleTo("mature", `完成 ${lc.chats} 次对话`); }
+    this.lifecycle.tick();
   }
 
-  // 记录阶段转换 (ANS: 生命阶段推进), 保留日志
-  _lifecycleTo(stage, note) {
-    this.lifecycle.stage = stage;
-    this.lifecycle.log.push({ stage, note, ts: Date.now() });
-    if (this.lifecycle.log.length > 50) this.lifecycle.log.shift();
-    info(`[lifecycle] ${stage}: ${note}`);
-  }
-
-  // 生命周期摘要 (可观测)
+  // 生命周期摘要 (可观测, 委托 ans/lifecycle 模块)
   lifecycleStatus() {
-    const lc = this.lifecycle;
-    return {
-      stage: lc.stage,
-      bornAt: new Date(lc.bornAt).toISOString(),
-      ageMs: Date.now() - lc.bornAt,
-      chats: lc.chats,
-      evolved: lc.evolved,
-      reproduced: lc.reproduced,
-      recent: lc.log.slice(-5),
-    };
+    return this.lifecycle.status();
   }
 
 
@@ -645,18 +623,7 @@ export class PPXAgent {
     return msgs.slice(-limit).map(({ role, content }) => ({ role, content }));
   }
 
-  async _offlineToolRoute(userMsg) {
-    const m = String(userMsg).trim();
-    const read = m.match(/^读文件\s+(.+)$/i);
-    if (read) return `[工具] ${await this.tools.call("read_file", { path: read[1].trim() })}`;
-    const list = m.match(/^列出?\s+(\S+)?$/i);
-    if (list) return `[工具] ${await this.tools.call("list_dir", { path: list[1] || "." })}`;
-    const time = m.match(/^时间$/i);
-    if (time) return `[工具] ${await this.tools.call("get_time", {})}`;
-    const search = m.match(/^记住[:：]\s*(.+)$/i);
-    if (search) return `[工具] ${await this.tools.call("memory_add", { content: search[1].trim() })}`;
-    return null;
-  }
+  // 离线工具路由已并入 _localIntent (超集), 不再单独保留
 
   _learnFromTurn(userMsg, reply) {
     const m = String(userMsg).match(/经验交给皮皮虾[:：]\s*(.+)/i);
@@ -764,36 +731,23 @@ export class PPXAgent {
     };
   }
 
-  // 主动任务生成 (ANS 自主性): 扫描 L1 记忆里的待办/偏好, 生成 1-3 条主动提醒
-  // config.agent.proactive.enabled 才接定时器; 本方法可被命令/通道主动调用
+  // 主动任务生成 (ANS 自主性): 扫描 L1 记忆里的待办/偏好, 生成主动提醒 (委托 ans/proactive 模块)
+  // 返回可直接投递的文本 (保持兼容); 结构化数据见 startProactiveTicker 回调的 payload
   async proactiveSuggest() {
-    try {
-      if (!this.facts) return null;
-      const pending = this.facts.list()
-        .filter((f) => f && /待办|需要|记得|计划|还没|未完成|想|要|必须/.test(String(f.content || "")))
-        .slice(0, 5);
-      if (!pending.length) return null;
-      const lines = pending.map((f) => "- " + String(f.content || "").slice(0, 100));
-      if (!this.llm) return "【主动提醒】你之前提到过:\n" + lines.join("\n");
-      const r = await this.llm.chat([
-        { role: "system", content: "你是主动助手。基于用户历史提到的待办/偏好, 生成 1-3 条简短主动提醒 (每条 ≤30 字, 直接输出, 不要客套)。" },
-        { role: "user", content: lines.join("\n") },
-      ]);
-      return r.content || null;
-    } catch {
-      return null;
-    }
+    const out = await suggestProactive(this);
+    return out ? out.text : null;
   }
 
   // 启动主动任务生成定时器 (config.agent.proactive.enabled 才启用)
+  // 回调契约: cb(payload) → { ts, items: [{content, importance, source, id}], text }
   startProactiveTicker(cb) {
     const cfg = this.config.agent?.proactive;
     if (!cfg || !cfg.enabled) return null;
     const ms = Number(cfg.interval_ms) || 3600000;
     this._proactiveTimer = setInterval(async () => {
       try {
-        const msg = await this.proactiveSuggest();
-        if (msg && typeof cb === "function") { try { cb(msg); } catch {} }
+        const payload = await suggestProactive(this);
+        if (payload && typeof cb === "function") { try { cb(payload); } catch {} }
       } catch {}
     }, ms);
     info(`[proactive] 主动任务生成已启动 (每 ${Math.round(ms / 60000)} 分钟)`);
@@ -816,28 +770,13 @@ export class PPXAgent {
 
   // 热重载提供方: 从 config/ppx.json 重建 LLM 客户端列表
   // 用法: HTTP API 增删改提供方后调用, 立即生效无需重启
+  // provider 可用性解析复用 plugin/builtin.js (只此一份, 不重复实现)
   reloadProviders() {
     this.config = this._loadConfig(null);
-    this.llm = this._resolveSingleLLM(this.config);
-    this.allProviders = this._resolveAllLLMs(this.config);
+    this.llm = resolveLLM(this.config);
+    this.allProviders = resolveAllLLMs(this.config);
     info(`[providers] 热重载完成: ${this.allProviders.length} 个客户端`);
     return { llm: this.llm ? (this.llm.backend || this.llm.model) : null, count: this.allProviders.length };
-  }
-
-  // 与 plugin/builtin.js 的同名纯函数保持一致; 这里复制一份避免循环依赖 (agent 已被 plugin 依赖)
-  _isUsableProvider(prov) {
-    const key = prov.api_key || process.env[prov.api_key_env];
-    const isLocal = /127\.0\.0\.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
-    const isOpenclaw = prov.backend === "openclaw" || prov.id === "openclaw";
-    const isDeepseek = prov.backend === "deepseek" || prov.backend === "dsh" || prov.id === "dsh";
-    return !!(key || isLocal || isOpenclaw || isDeepseek);
-  }
-  _resolveSingleLLM(config) {
-    const p = (config.providers || []).find((x) => this._isUsableProvider(x));
-    return p ? new LLMClient(p) : null;
-  }
-  _resolveAllLLMs(config) {
-    return (config.providers || []).filter((x) => this._isUsableProvider(x)).map((p) => new LLMClient(p));
   }
 
   shutdown() {
