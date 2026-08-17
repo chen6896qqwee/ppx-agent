@@ -6,6 +6,7 @@ import os from "node:os";
 import fs from "node:fs";
 import { startServer } from "../src/server.js";
 import { getSettings, updateSettings } from "../src/config/settings.js";
+import { PPXAgent } from "../src/agent/index.js";
 
 function tmpRoot(n) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `ppx-set-${n}-`));
@@ -143,5 +144,69 @@ test("/api/settings 无鉴权 token 返回 401", async () => {
   assert.equal(r.status, 401, "无 token 401");
   s.agent.shutdown();
   await stop(s);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("updateSettings: mcp.servers 白名单校验 + headers 脱敏", () => {
+  const root = tmpRoot("mcp");
+  fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({}));
+  const s = updateSettings(root, {
+    mcp: {
+      auto_connect: true,
+      servers: [
+        { command: "npx", args: ["-y", "some-mcp"], env: { TOKEN: "secret" }, prefix: "mcp_" },
+        { url: "https://mcp.example.com", headers: { Authorization: "Bearer xxx" }, timeout: 10000 },
+      ],
+    },
+  });
+  assert.equal(s.mcp.auto_connect, true);
+  assert.equal(s.mcp.servers.length, 2, "两个服务器都保存");
+  assert.equal(s.mcp.servers[0].command, "npx", "command 保留");
+  assert.equal(s.mcp.servers[0].env_set, true, "env 只回 set 标志");
+  assert.ok(!JSON.stringify(s.mcp).includes("secret"), "env 明文不回传");
+  assert.equal(s.mcp.servers[1].url, "https://mcp.example.com", "http 服务器 url 保留");
+  assert.equal(s.mcp.servers[1].headers_set, true, "headers 只回 set 标志");
+  // 落盘验证 (env/headers 明文在磁盘, 白名单字段)
+  const onDisk = JSON.parse(fs.readFileSync(path.join(root, "config", "ppx.json"), "utf8"));
+  assert.equal(onDisk.mcp.servers[0].env.TOKEN, "secret", "磁盘保留 env");
+  assert.ok(!onDisk.mcp.servers[0].evil, "无白名单外字段");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("updateSettings: mcp 服务器缺 command/url 被拒绝", () => {
+  const root = tmpRoot("mcpbad");
+  fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({}));
+  assert.throws(() => updateSettings(root, { mcp: { servers: [{ name: "no-cmd" }] } }), /command.*url|url.*command/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("updateSettings: tools.disabled 校验 + 可读写", () => {
+  const root = tmpRoot("tools");
+  fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({}));
+  const s = updateSettings(root, { tools: { disabled: ["run_command", "code_act"] } });
+  assert.deepEqual(s.tools.disabled, ["run_command", "code_act"]);
+  // 非法值被拒
+  assert.throws(() => updateSettings(root, { tools: { disabled: "run_command" } }), /数组/);
+  assert.throws(() => updateSettings(root, { tools: { disabled: [123] } }), /数组/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("agent: tools.disabled 启动时生效 + reloadSettings 热应用", async () => {
+  const root = tmpRoot("toolapply");
+  fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({
+    providers: [],
+    tools: { disabled: ["run_command"] },
+  }));
+  const a = new PPXAgent({ root });
+  assert.equal(a.tools.has("run_command"), true, "工具已注册");
+  const st = a.tools.listDetailed().find((t) => t.name === "run_command");
+  assert.equal(st.enabled, false, "run_command 启动时已被禁用");
+  assert.ok(!a.tools.toOpenAI().some((t) => t.function.name === "run_command"), "不在 LLM schema 中");
+  // 临时启用后 reloadSettings 应重新禁用 (从 config 读)
+  a.tools.enable("run_command");
+  assert.equal(a.tools.listDetailed().find((t) => t.name === "run_command").enabled, true, "临时启用");
+  a.reloadSettings();
+  assert.equal(a.tools.listDetailed().find((t) => t.name === "run_command").enabled, false, "reloadSettings 后重新禁用");
+  a.shutdown();
   fs.rmSync(root, { recursive: true, force: true });
 });

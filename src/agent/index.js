@@ -131,6 +131,9 @@ export class PPXAgent {
     // 方法技能目录 (Superpowers 吸收): 供 _context 注入技能清单, LLM 按需 load_skill
     try { this.skills = new SkillLoader(path.join(root, "skills")); } catch { this.skills = null; }
 
+    // 应用 tools.disabled: 从 config/ppx.json 读取需禁用的工具, 启动时禁用 (设置 UI 写盘生效)
+    this._applyDisabledTools();
+
     // 可选: 启动时自动连接 MCP 服务器 (config.mcp.auto_connect = true 时非阻塞连接)
     if (this.config.mcp?.auto_connect && this.config.mcp.servers?.length) {
       this.connectMcp()
@@ -846,8 +849,23 @@ export class PPXAgent {
     this.config = this._loadConfig(null);
     this.userName = this.config.user?.name || "兄弟";
     this.ctx.provide("userName", this.userName);
+    // 应用 tools.disabled 变更 (设置 UI 启停工具后立即生效)
+    this._applyDisabledTools();
     info(`[settings] 热重载完成: 用户=${this.userName}, 模式=${this.config.agent?.mode || "react"}`);
     return { userName: this.userName, mode: this.config.agent?.mode || "react" };
+  }
+
+  // 应用 config.tools.disabled: 禁用列表中的工具 (启停工具 UI 写盘后生效)
+  _applyDisabledTools() {
+    try {
+      const disabled = Array.isArray(this.config.tools?.disabled) ? this.config.tools.disabled : [];
+      if (!disabled.length) return;
+      let n = 0;
+      for (const name of disabled) {
+        try { if (this.tools.disable(name)) n += 1; } catch {}
+      }
+      if (n) info(`[tools] 已禁用 ${n} 个工具: ${disabled.join(", ")}`);
+    } catch { /* 工具未就绪时静默跳过 */ }
   }
 
   shutdown() {

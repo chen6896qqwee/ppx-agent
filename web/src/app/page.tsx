@@ -1,7 +1,7 @@
 ﻿"use client";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { listProviders, type Provider } from "../lib/api";
+import { listProviders, getSettings, type Provider } from "../lib/api";
 
 type Msg = { role: "user" | "agent"; content: string };
 type Scene = { id: string; name: string; mode: string; description: string; canHelp: string; facts: number; lastUpdated: string };
@@ -24,11 +24,24 @@ export default function Home() {
 
   useEffect(() => { endRef.current?.scrollIntoView(); }, [msgs]);
 
-  // 首启检测: 没有任何就绪提供方时显示顶部引导条 (仅一次, 配好后自动消失)
+  // 首启检测: 模型未配 / MCP 未连 时显示对应引导 (可分别关闭)
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  const [mcpConfigured, setMcpConfigured] = useState(false);
   useEffect(() => {
     listProviders().then((r) => setProviders(r.providers)).catch(() => {});
+    // MCP 是否已配置 (settings.mcp.servers 非空)
+    getSettings().then((r) => setMcpConfigured((r.settings.mcp?.servers?.length || 0) > 0)).catch(() => {});
   }, []);
   const hasReady = providers.some((p) => p.api_key_set || p.mjs || p.dsh_root);
+
+  // 引导项: 模型未配最优先; 模型已配但 MCP 未配时提示扩展能力
+  const guides = [];
+  if (!hasReady && !dismissed.includes("model")) {
+    guides.push({ key: "model", text: "还没有配置任何模型, 皮皮虾现在无法对话。先去设置 → 模型 连一个模型吧。", link: "/settings/model", btn: "前往配置" });
+  } else if (hasReady && !mcpConfigured && !dismissed.includes("mcp")) {
+    guides.push({ key: "mcp", text: "未配置 MCP 服务器。在 设置 → 插件与能力 中添加, 扩展 agent 工具能力。", link: "/settings/plugins", btn: "去配置" });
+  }
+  const activeGuide = guides[0] || null;
 
   async function send() {
     const t = input.trim(); if (!t || busy) return;
@@ -102,12 +115,12 @@ export default function Home() {
           <Link href="/settings/model" className="ml-auto rounded-lg border border-neutral-700 px-3 py-1.5 text-[12px] text-neutral-300 hover:bg-neutral-800 hover:text-neutral-200">设置</Link>
           <span className="rounded-full bg-[#1d2a3a] px-2.5 py-0.5 text-[11px] text-[#4da3ff]">在线</span>
         </header>
-        {!hasReady && (
+        {activeGuide && (
           <div className="flex items-center gap-3 border-b border-[#5e2b2b] bg-[#2b1616] px-5 py-3 text-[12px] text-[#ffb4b4]">
             <span>⚠️</span>
-            <span className="flex-1">还没有配置任何模型, 皮皮虾现在无法对话。先去设置 → 模型 连一个模型吧。</span>
-            <Link href="/settings/model" className="rounded-lg bg-[#ff6b6b] px-3 py-1 text-[11px] font-medium text-white hover:bg-[#e25555]">前往配置</Link>
-            <button onClick={() => setProviders([{ id: "_dismiss", api_key_set: true } as Provider])} className="text-[11px] text-neutral-500 hover:text-neutral-300" title="稍后再说">✕</button>
+            <span className="flex-1">{activeGuide.text}</span>
+            <Link href={activeGuide.link} className="rounded-lg bg-[#ff6b6b] px-3 py-1 text-[11px] font-medium text-white hover:bg-[#e25555]">{activeGuide.btn}</Link>
+            <button onClick={() => setDismissed((d) => [...d, activeGuide.key])} className="text-[11px] text-neutral-500 hover:text-neutral-300" title="稍后再说">✕</button>
           </div>
         )}
         <div className="flex-1 space-y-3 overflow-y-auto p-5">

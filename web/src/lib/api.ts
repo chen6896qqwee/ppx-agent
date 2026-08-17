@@ -91,6 +91,17 @@ export async function pingHealth(): Promise<{ status: string; agent: string }> {
 }
 
 // ---- 通用设置 ----
+export type McpServerConfig = {
+  name?: string;
+  command?: string;
+  args?: string[];
+  env_set?: boolean;
+  prefix?: string;
+  url?: string;
+  headers_set?: boolean;
+  timeout?: number;
+};
+
 export type AppSettings = {
   user: { name: string };
   http: { port: number; auth_token_set: boolean };
@@ -102,6 +113,8 @@ export type AppSettings = {
     system_extra: string;
     values: string[];
   };
+  mcp: { auto_connect: boolean; servers: McpServerConfig[] };
+  tools: { disabled: string[] };
 };
 
 export type SettingsPatch = {
@@ -109,6 +122,8 @@ export type SettingsPatch = {
   http?: Partial<Omit<AppSettings["http"], "auth_token_set">> & { auth_token?: string };
   security?: Partial<AppSettings["security"]>;
   agent?: Partial<AppSettings["agent"]>;
+  mcp?: Partial<AppSettings["mcp"]>;
+  tools?: Partial<AppSettings["tools"]>;
 };
 
 export async function getSettings(): Promise<{ settings: AppSettings }> {

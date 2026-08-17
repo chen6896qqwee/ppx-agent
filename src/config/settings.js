@@ -51,9 +51,14 @@ export const SETTINGS_FIELDS = {
   http: ["port", "auth_token"],
   security: ["allow_all", "command_timeout_ms", "code_act"],
   agent: ["name", "mode", "citation_rule", "system_extra", "values"],
+  mcp: ["servers", "auto_connect"],
+  tools: ["disabled"],
 };
 
-// 安全视图: 抹掉敏感明文 (auth_token / api_key), 只暴露 set 标志
+// MCP 服务器字段白名单 (防注入任意字段)
+export const MCP_SERVER_KEYS = ["command", "args", "env", "prefix", "url", "headers", "timeout", "name"];
+
+// 安全视图: 抹掉敏感明文 (auth_token / api_key / mcp headers), 只暴露 set 标志
 function sanitizeSettings(cfg) {
   const out = {
     user: { name: cfg.user?.name || "兄弟" },
@@ -73,7 +78,33 @@ function sanitizeSettings(cfg) {
       system_extra: cfg.agent?.system_extra ?? "",
       values: Array.isArray(cfg.agent?.values) ? cfg.agent.values : (DEFAULT_CONFIG.agent?.values || []),
     },
+    mcp: {
+      auto_connect: !!cfg.mcp?.auto_connect,
+      servers: Array.isArray(cfg.mcp?.servers) ? cfg.mcp.servers.map((s) => sanitizeMcpServer(s)) : [],
+    },
+    tools: {
+      disabled: Array.isArray(cfg.tools?.disabled) ? cfg.tools.disabled : [],
+    },
   };
+  return out;
+}
+
+// MCP 服务器安全视图: 只暴露白名单字段, headers 抹掉明文只回 set 标志
+function sanitizeMcpServer(s) {
+  if (!s || typeof s !== "object") return {};
+  const out = {};
+  for (const k of MCP_SERVER_KEYS) {
+    if (k === "headers") {
+      if (s.headers && typeof s.headers === "object") out.headers_set = true;
+      continue;
+    }
+    if (k === "env") {
+      if (s.env && typeof s.env === "object") out.env_set = Object.keys(s.env).length > 0;
+      continue;
+    }
+    if (s[k] !== undefined) out[k] = s[k];
+  }
+  if (!out.name) out.name = s.command || s.url || "";
   return out;
 }
 
@@ -85,8 +116,8 @@ export function getSettings(root) {
 }
 
 // PUT /api/settings: 只更新白名单字段, 返回更新后的安全视图
-// patch = { user?: {name}, http?: {port, auth_token}, security?: {...}, agent?: {...} }
-// 校验: 端口范围 / 超时范围 / values 必须是字符串数组
+// patch = { user?, http?, security?, agent?, mcp?, tools? }
+// 校验: 端口范围 / 超时范围 / values 字符串数组 / mcp.servers 结构 / tools.disabled 字符串数组
 export function updateSettings(root, patch) {
   if (!patch || typeof patch !== "object") throw new Error("patch 必须是对象");
   const cfg = readConfigRaw(root);
@@ -95,6 +126,8 @@ export function updateSettings(root, patch) {
   cfg.channels.http = { ...(cfg.channels.http || {}), ...(patch.http || {}) };
   cfg.security = { ...(cfg.security || {}), ...(patch.security || {}) };
   cfg.agent = { ...(cfg.agent || {}), ...(patch.agent || {}) };
+  cfg.mcp = { ...(cfg.mcp || {}), ...(patch.mcp || {}) };
+  cfg.tools = { ...(cfg.tools || {}), ...(patch.tools || {}) };
 
   // 校验
   const port = cfg.channels.http.port;
@@ -104,9 +137,33 @@ export function updateSettings(root, patch) {
   if (cfg.agent.values != null && !Array.isArray(cfg.agent.values)) throw new Error("核心价值必须是字符串数组");
   if (cfg.agent.values && cfg.agent.values.some((v) => typeof v !== "string")) throw new Error("核心价值必须是字符串数组");
   if (cfg.agent.mode != null && !/^[a-z-]{2,30}$/.test(String(cfg.agent.mode))) throw new Error("编排模式只含小写字母/横线");
+  // mcp.servers: 必须是对象数组, 每项至少 command 或 url, 只保留白名单字段
+  if (cfg.mcp.servers != null && !Array.isArray(cfg.mcp.servers)) throw new Error("MCP servers 必须是数组");
+  if (Array.isArray(cfg.mcp.servers)) {
+    const clean = [];
+    for (const s of cfg.mcp.servers) {
+      if (!s || typeof s !== "object") continue;
+      if (!s.command && !s.url) throw new Error("MCP 服务器至少需要 command(stdio) 或 url(http)");
+      const norm = {};
+      for (const k of MCP_SERVER_KEYS) if (s[k] !== undefined) norm[k] = s[k];
+      clean.push(norm);
+    }
+    cfg.mcp.servers = clean;
+  }
+  // tools.disabled: 必须是字符串数组
+  if (cfg.tools.disabled != null) {
+    if (!Array.isArray(cfg.tools.disabled)) throw new Error("tools.disabled 必须是字符串数组");
+    if (cfg.tools.disabled.some((t) => typeof t !== "string")) throw new Error("tools.disabled 必须是字符串数组");
+  }
 
   writeConfigAtomic(root, cfg);
   return sanitizeSettings(cfg);
+}
+
+// 应用 tools.disabled: 返回需要禁用的工具名列表 (供启动时/热重载时禁用)
+export function disabledTools(root) {
+  const { tools } = getSettings(root);
+  return Array.isArray(tools?.disabled) ? tools.disabled : [];
 }
 
 // 可编辑字段元数据 (供前端渲染表单, 免前端硬编码结构)

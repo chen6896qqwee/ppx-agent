@@ -1,5 +1,23 @@
 ﻿# CHANGELOG
 
+## v1.0.6 (2026-08-17) — MCP 配置 UI + 工具启停 + 首启引导
+
+依据 EVALUATION-2026-08-17 (第六轮) 四项整改全部落地:
+
+### P1
+- **MCP 配置进 UI**: settings.js 加 mcp 分区 (servers 白名单字段 + auto_connect), headers/env 只回 set 标志
+  (明文不回传); 插件页新增 MCP 服务器配置表单 (stdio command/args / HTTP url / 删除 / 自动连接开关)
+- **工具启停进 UI**: settings.js 加 tools.disabled 分区; `agent._applyDisabledTools()` 启动时 + reloadSettings
+  热应用禁用列表; 插件页工具列表加启停开关 (即时生效, 持久化到 config)
+
+### P2
+- **首启引导升级**: 横幅从单维度 (模型未配) 升级为多维度 (模型未配 > MCP 未配), 可分别关闭
+- MCP 校验: 每项至少 command 或 url, 只保留白名单字段
+
+### 验证
+- 全量测试 402 项 398 过 0 失败 4 跳过 (新增 4 项: mcp 白名单/脱敏、tools.disabled、启动应用)
+- web tsc 0 错误; 端到端冒烟: PUT mcp+tools → web_search 禁用生效 / run_command 保持启用
+
 ## v1.0.5 (2026-08-17) — Web 设置页补齐 (1 精 3 空 → 4 全)
 
 依据 EVALUATION-2026-08-17 (第五轮) 补齐 Web 产品壳短板:
