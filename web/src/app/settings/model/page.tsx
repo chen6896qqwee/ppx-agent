@@ -26,7 +26,7 @@ export default function ModelSettingsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [status, setStatus] = useState<Record<string, Status>>({});
   const [editing, setEditing] = useState<Provider | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<false | "preset" | "custom">(false);
 
   async function refresh() {
     try {

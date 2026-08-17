@@ -48,6 +48,7 @@ export type Provider = {
   model?: string;
   vision?: boolean;
   timeout_ms?: number;
+  api_key?: string;
   api_key_env?: string;
   api_key_set?: boolean;
   mjs?: string;

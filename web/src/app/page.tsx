@@ -12,6 +12,7 @@ export default function Home() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [busyInfo, setBusyInfo] = useState(""); // 推理轮次/工具调用状态提示
   const [tab, setTab] = useState<"scenes" | "memory" | "traces" | "stats">("scenes");
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [facts, setFacts] = useState<Fact[]>([]);
@@ -32,12 +33,36 @@ export default function Home() {
   async function send() {
     const t = input.trim(); if (!t || busy) return;
     setMsgs((m) => [...m, { role: "user", content: t }]);
-    setInput(""); setBusy(true);
+    setInput(""); setBusy(true); setBusyInfo("");
     try {
-      const r = await fetch("/message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: t }) });
-      const j = await r.json();
-      setMsgs((m) => [...m, { role: "agent", content: j.reply || j.error || "(无回复)" }]);
-    } catch (e: any) { setMsgs((m) => [...m, { role: "agent", content: "请求失败: " + e.message }]); }
+      const r = await fetch("/message/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: t }) });
+      if (!r.ok || !r.body) throw new Error("HTTP " + r.status);
+      // 占位 agent 消息, delta 往里追加
+      setMsgs((m) => [...m, { role: "agent", content: "" }]);
+      const updateAgent = (text: string) => setMsgs((m) => { const c = [...m]; c[c.length - 1] = { role: "agent", content: text }; return c; });
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "", agentText = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+          const dataLine = chunk.split("\n").find((l) => l.startsWith("data:"));
+          if (!dataLine) continue;
+          let ev: any; try { ev = JSON.parse(dataLine.slice(5).trim()); } catch { continue; }
+          if (ev.type === "delta") { agentText += ev.content || ""; updateAgent(agentText); }
+          else if (ev.type === "step") { setBusyInfo(`推理中 · 第 ${(ev.round || 0) + 1}/${ev.maxRounds || 0} 轮`); }
+          else if (ev.type === "tool") { setBusyInfo(`${ev.status === "start" ? "调用工具" : "工具完成"} ${ev.tool}${ev.durationMs ? " · " + ev.durationMs + "ms" : ""}`); }
+          else if (ev.type === "done") { if (ev.content && ev.content !== agentText) updateAgent(ev.content); setBusyInfo(""); }
+        }
+      }
+    } catch (e: any) {
+      setMsgs((m) => [...m, { role: "agent", content: "请求失败: " + e.message }]);
+      setBusyInfo("");
+    }
     setBusy(false);
   }
 
@@ -94,6 +119,7 @@ export default function Home() {
           ))}
           <div ref={endRef} />
         </div>
+        {busyInfo && <div className="border-t border-neutral-800 px-5 pt-2 text-[12px] text-[#4da3ff]">{busyInfo}</div>}
         <footer className="flex gap-2 border-t border-neutral-800 p-4">
           <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="输入消息，Enter 发送" className="flex-1 rounded-xl border border-neutral-700 bg-neutral-900 px-4 py-2.5 text-sm outline-none focus:border-[#1d5cff]" />
           <button onClick={send} disabled={busy} className="rounded-xl bg-[#1d5cff] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50">{busy ? "…" : "发送"}</button>

@@ -154,7 +154,8 @@ export class HttpChannel extends Channel {
           const reply = await this.agent.chatStream(String(text), {
             sessionKey,
             onDelta: (d) => { full += d; try { send({ type: "delta", content: d }); } catch {} },
-            onTool: (ev) => { try { send({ type: "tool", ...ev }); } catch {} }, // P1#7 工具调用可视化
+            onTool: (ev) => { try { send({ type: "tool", tool: ev.tool, status: ev.type, args: ev.args, ok: ev.ok, durationMs: ev.durationMs }); } catch {} }, // 工具调用可视化
+            onStep: (ev) => { try { send({ type: "step", round: ev.round, maxRounds: ev.maxRounds }); } catch {} }, // turn/step 推理轮次进度
           });
           const finalContent = full || reply;
           send({ type: "done", content: finalContent, sessionId: sessionKey });

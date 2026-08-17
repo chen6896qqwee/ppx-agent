@@ -1,5 +1,6 @@
 ﻿// src/agent/index.js - Agent 引擎 (皮皮虾核心) v0.2 含工具调用
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { TOOL_ERROR_PREFIX } from "../tools/index.js";
@@ -67,8 +68,9 @@ export function toToolContent(result) {
 export class PPXAgent {
   constructor({ root = ROOT, configFile = null, plugins = [], dataDir = null } = {}) {
     this.root = root;
-    // dataDir 可覆盖 (军团 worker 用独立数据目录, 避免多进程互踩)
-    this.dataDir = dataDir || path.join(root, "data");
+    // dataDir 可覆盖: 显式参数 > PPX_DATA_DIR 环境变量 > 默认目录
+    // 默认目录: 包装在 node_modules 里时外置到 ~/.ppx (防卸载丢数据), 否则 root/data
+    this.dataDir = dataDir || process.env.PPX_DATA_DIR || this._defaultDataDir(root);
     this.config = this._loadConfig(configFile);
     this.userName = this.config.user?.name || "兄弟";
 
@@ -105,9 +107,9 @@ export class PPXAgent {
     this.memory.summarizer = (raw) => this._summarizeMemory(raw);
     this.memory.setExtractor((u, a) => this._extractMemory(u, a));
 
-    // absorb: hermest notify + interrupt state
+    // 主动通知 + 中断状态
     this._notifyCb = null;
-    this._onToolEvent = null; // P1#7
+    this._onToolEvent = null; // 工具事件回调
     this._interrupted = false;
     this._lastTurnUsedTools = false;
     this._mcp = null; // MCP 连接句柄 (connectMcp 后赋值)
@@ -126,9 +128,15 @@ export class PPXAgent {
 
 
   
-  // absorb: hermest proactive notify + interrupt API
+  // 默认数据目录: 包装在 node_modules 里(全局/本地安装)时外置到 ~/.ppx, 否则 root/data
+  _defaultDataDir(root) {
+    if (String(root).includes("node_modules")) return path.join(os.homedir(), ".ppx");
+    return path.join(root, "data");
+  }
+
+  // 主动通知 + 中断 API
   setNotify(cb) { this._notifyCb = typeof cb === "function" ? cb : null; }
-  // P1#7: 工具调用过程可视化 - 回调 (tool名, 参数, 耗时, 状态) 供 Web UI 推送
+  // 工具调用过程可视化 - 回调 (tool名, 参数, 耗时, 状态) 供 Web UI 推送
   setToolEvent(cb) { this._onToolEvent = typeof cb === "function" ? cb : null; }
   // turn/step 分层: 推理轮次事件 (每轮工具循环发一次 step), 供军团 worker 上报进度
   setStepEvent(cb) { this._onStepEvent = typeof cb === "function" ? cb : null; }
@@ -383,7 +391,7 @@ export class PPXAgent {
   // 流式对话: 返回 { text, history } 或回调 onDelta 推送增量
   // 支持工具循环: 若消息触发工具调用, 走 _llmWithTools (触发 onTool 事件推送工具活动),
   // 最终结果作为一次 delta 推送; 否则走 streamChat 逐字流式 [P1#7]
-  async chatStream(userMsg, { sessionKey = "default", onDelta, onTool } = {}) {
+  async chatStream(userMsg, { sessionKey = "default", onDelta, onTool, onStep } = {}) {
     if (!this.llm) return this.chat(userMsg, { sessionKey });
     this.clearInterrupt(); // 新一轮对话开始, 复位中断状态
     // 内核自主决策: 高置信简单指令本地处理
@@ -400,6 +408,9 @@ export class PPXAgent {
     // 挂工具事件透传 (供 onTool 推送)
     const prevCb = this._onToolEvent;
     if (onTool) this._onToolEvent = (ev) => { try { onTool(ev); } catch {} };
+    // 挂 step 事件透传 (供 onStep 推送推理轮次)
+    const prevStepCb = this._onStepEvent;
+    if (onStep) this._onStepEvent = (ev) => { try { onStep(ev); } catch {} };
 
     let reply;
     try {
@@ -418,6 +429,7 @@ export class PPXAgent {
       if (onDelta) onDelta(reply);
     } finally {
       this._onToolEvent = prevCb;
+      this._onStepEvent = prevStepCb;
     }
     this._pushTurn(sessionKey, String(userMsg), reply);
     await this.memory.recordTurn(userMsg, reply);

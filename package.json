@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "author": "chen6896qqwee <chen6896qqwee@users.noreply.github.com>",
   "engines": {
-    "node": ">=22.22.3 <23 || >=24.15 <25 || >=25.9"
+    "node": ">=20"
   },
   "main": "src/agent/index.js",
   "bin": {
