@@ -24,6 +24,7 @@
     "selfheal": "node src/selfheal/run.js",
     "web": "node scripts/start-web.js",
     "web:build": "npm run build --prefix web",
+    "release": "node scripts/release.js",
     "test": "node --test"
   },
   "keywords": [

@@ -33,6 +33,17 @@ npm run chat       # CLI 对话
 
 > Web UI 目前随源码仓库分发，不在 npm 包内（见下方「Web UI」）。
 
+### 方式 C：Docker（内核 + Web UI 一条命令起）
+
+```bash
+docker build -t ppx-agent .
+docker run -p 8899:8899 -p 3000:3000 ppx-agent
+```
+
+打开 http://localhost:3000 使用 Web UI（内核跑在容器内 8899，数据外置到容器 `/root/.ppx`）。
+
+> 想一键打包发布物（前端 build + 内核 tgz），运行 `npm run release`，产物在 `dist/`。
+
 ## 3. 配置模型
 
 模型提供方在 `config/ppx.json` 的 `providers` 数组里，按顺序回退（第一个失败自动切下一个）。纯 HTTP 模型只需配 API key 环境变量：

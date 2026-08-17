@@ -22,5 +22,10 @@ Thumbs.db
 _rd*.py
 _ev.py
 
+# 发布产物 (scripts/release.js 生成)
+dist/
+*.tgz
+web/.next/
+
 .deps/
 *.log
