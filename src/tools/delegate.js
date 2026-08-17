@@ -99,10 +99,11 @@ function withTimeout(p, ms, label) {
 
 // ---- SDD review 循环: 实施 -> 只读审查 -> (修复 -> 复审) * N -> 熔断 ----
 // 返回: 通过时 "✅ 审查通过..." + 产出; 熔断时 "⚠️ 未决发现停放..." + 产出
-async function runReviewLoop({ agent, L, task, perspective, role, judge, fixRounds }) {
+// namePrefix: 多任务 review 时传入 `${role}_${ts}_${i}`, 保证每对 agent 名唯一
+async function runReviewLoop({ agent, L, task, perspective, role, judge, fixRounds, namePrefix = null }) {
   const ts = Date.now().toString(36);
-  const implName = `${role}_impl_${ts}`;
-  const revName = `${role}_rev_${ts}`;
+  const implName = namePrefix ? `${namePrefix}_impl` : `${role}_impl_${ts}`;
+  const revName = namePrefix ? `${namePrefix}_rev` : `${role}_rev_${ts}`;
   const mkOpts = (n) => ({ dataDir: path.join(agent.dataDir, "legion", n), globalDataDir: agent.globalDataDir });
   L.spawnAgent(implName, mkOpts(implName));
   // 审查者只读: PPX_AGENT_READONLY=1 时 worker 禁用全部修改/执行工具
@@ -165,7 +166,7 @@ async function runReviewLoop({ agent, L, task, perspective, role, judge, fixRoun
 export function registerDelegateTools(catalog, _opts = {}) {
   catalog.register({
     name: "spawn_agent",
-    description: "派生子 agent 处理子任务并等待结果。适合需要专门角色、并行、或隔离执行的任务 (如数据分析、代码审查、多角度论证)。子 agent 共享全局经验库。支持: 单个 task; 或 tasks 数组并行派发多个子 agent + perspectives 差异化视角; arbitrate=true 时主 agent 仲裁聚合各方结果; review=true (仅单 task) 时走 SDD 审查循环: 实施者干活 -> 只读审查者挑问题 -> 修复 -> 复审, 达上限熔断停放交主 agent 裁定。",
+    description: "派生子 agent 处理子任务并等待结果。适合需要专门角色、并行、或隔离执行的任务 (如数据分析、代码审查、多角度论证)。子 agent 共享全局经验库。支持: 单个 task; 或 tasks 数组并行派发多个子 agent + perspectives 差异化视角; arbitrate=true 时主 agent 仲裁聚合各方结果; review=true 时走 SDD 审查循环: 实施者干活 -> 只读审查者挑问题 -> 修复 -> 复审, 达上限熔断停放交主 agent 裁定 (单任务直接审查; 多任务每个子任务独立一对实施+审查, 可配 arbitrate 聚合)。",
     parameters: {
       type: "object",
       properties: {
@@ -173,9 +174,9 @@ export function registerDelegateTools(catalog, _opts = {}) {
         tasks: { type: "array", items: { type: "string" }, description: "并行子任务列表 (每个子 agent 一个), 适合多角度论证/并行处理; 与 task 二选一" },
         perspectives: { type: "array", items: { type: "string" }, description: "差异化视角列表, 与 tasks 一一对应, 注入每个子 agent 专属视角 (对抗同质失败), 可缺省" },
         role: { type: "string", description: "子 agent 角色名 (如 数据分析师/代码审查员), 默认 helper" },
-        arbitrate: { type: "boolean", description: "是否由主 agent 仲裁聚合所有子结果 (并行任务时推荐), 默认 false 直接返回拼接结果" },
+        arbitrate: { type: "boolean", description: "是否由主 agent 仲裁聚合所有子结果 (并行/多任务 review 时推荐), 默认 false 直接返回拼接结果" },
         judge: { type: "string", description: "仲裁评审指令 (arbitrate=true 时生效, 如 找出最可靠结论/合并去重); review=true 时为审查准则, 可缺省" },
-        review: { type: "boolean", description: "SDD 审查循环 (仅单 task): 实施者 -> 只读审查者 -> 发现问题自动修复复审, 达上限熔断, 默认 false" },
+        review: { type: "boolean", description: "SDD 审查循环: 实施者 -> 只读审查者 -> 发现问题自动修复复审, 达上限熔断, 默认 false。单 task 与多 tasks 均支持" },
         fix_rounds: { type: "number", description: "审查循环最大修复轮数 (review=true 时生效, 默认 3, 上限 5)" },
       },
     },
@@ -191,10 +192,6 @@ export function registerDelegateTools(catalog, _opts = {}) {
       }
       if (!tasks) return "[工具错误] spawn_agent: 需要 task 或 tasks";
       if (!agent.llm) return "[工具错误] spawn_agent: 主 agent 未配置模型, 无法委派";
-      // review 循环仅支持单任务 (并行+审查 = 复杂编排, 留给 DAG/后续)
-      if (args.review && tasks.length > 1) {
-        return "[工具错误] spawn_agent: review 模式仅支持单个 task (并行任务请用 tasks 不加 review)";
-      }
       // 懒建军团 (复用已有, 避免重复 spawn 进程)
       let L = agent._legion;
       if (!L) { L = new Legion(); agent._legion = L; }
@@ -204,13 +201,39 @@ export function registerDelegateTools(catalog, _opts = {}) {
 
       try {
         // SDD review 循环: 实施 -> 审查 -> 修复 -> 熔断
-        if (args.review && tasks.length === 1) {
-          return await runReviewLoop({
-            agent, L, task: tasks[0],
-            perspective: perspectives[0],
-            role, judge: args.judge,
-            fixRounds: args.fix_rounds,
-          });
+        // 单任务: 直接跑; 多任务: 每个任务独立一对 (实施者+只读审查者), 并行跑, 可仲裁聚合
+        if (args.review) {
+          const prefix = `${role}_${Date.now().toString(36)}`;
+          if (tasks.length === 1) {
+            return await runReviewLoop({
+              agent, L, task: tasks[0],
+              perspective: perspectives[0],
+              role, judge: args.judge,
+              fixRounds: args.fix_rounds,
+              namePrefix: `${prefix}_0`,
+            });
+          }
+          // 多任务: 并行各任务 review, 各自独立 (agent 名唯一, 不冲突)
+          const settled = await Promise.all(tasks.map(async (task, i) => {
+            try {
+              return await runReviewLoop({
+                agent, L, task,
+                perspective: perspectives[i],
+                role, judge: args.judge,
+                fixRounds: args.fix_rounds,
+                namePrefix: `${prefix}_${i}`,
+              });
+            } catch (e) {
+              return `[子任务${i + 1} review 失败] ${e.message}`;
+            }
+          }));
+          if (args.arbitrate) {
+            return await arbitrate(agent, tasks, settled, perspectives, args.judge);
+          }
+          return tasks.map((t, i) => {
+            const p = perspectives?.[i] ? ` (${perspectives[i]})` : "";
+            return `【子任务${i + 1}${p}】${t}\n${settled[i]}`;
+          }).join("\n\n");
         }
         // 并行 spawn 子 agent: 每个独立数据目录 + 独立视角
         const names = tasks.map((_, i) => `${role}_${i}_${Date.now().toString(36)}`);

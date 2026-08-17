@@ -204,7 +204,7 @@ test("spawn_agent review: 审查通过直接返回产出 (mock legion)", async (
   agent._legion = {
     spawnAgent: () => {},
     send: async (name) => {
-      if (name.includes("_rev_")) { reviewCalls++; return { reply: "(无发现)" }; }
+      if (name.endsWith("_rev")) { reviewCalls++; return { reply: "(无发现)" }; }
       return { reply: "完整实现结果" };
     },
   };
@@ -223,7 +223,7 @@ test("spawn_agent review: 发现问题自动修复一轮后通过", async () => 
   agent._legion = {
     spawnAgent: () => {},
     send: async (name) => {
-      if (name.includes("_rev_")) {
+      if (name.endsWith("_rev")) {
         revCall++;
         return revCall === 1 ? { reply: "[Critical] 缺边界检查\n[Minor] 格式" } : { reply: "(无发现)" };
       }
@@ -247,7 +247,7 @@ test("spawn_agent review: 达修复上限熔断停放未决发现", async () => 
   agent._legion = {
     spawnAgent: () => {},
     send: async (name) => {
-      if (name.includes("_rev_")) return { reply: "[Important] 一直存在的问题" };
+      if (name.endsWith("_rev")) return { reply: "[Important] 一直存在的问题" };
       implCall++;
       return { reply: `实现第${implCall}版` };
     },
@@ -261,12 +261,37 @@ test("spawn_agent review: 达修复上限熔断停放未决发现", async () => 
   fs.rmSync(agent.dataDir, { recursive: true, force: true });
 });
 
-test("spawn_agent review: 多任务时引导错误", async () => {
+test("spawn_agent review: 多任务每任务独立审查后拼接", async () => {
   const agent = new PPXAgent({ root: tmp("revmulti") });
   agent.llm = { chat: async () => ({ content: "x" }) };
-  agent._legion = { spawnAgent: () => {}, send: async () => ({ reply: "x" }) };
-  const res = await agent.tools.call("spawn_agent", { tasks: ["a", "b"], review: true }, { agent });
-  assert.ok(res.includes("仅支持单个 task"), `引导, 实际: ${res}`);
+  let revCalls = 0;
+  agent._legion = {
+    spawnAgent: () => {},
+    send: async (name) => {
+      if (name.endsWith("_rev")) { revCalls++; return { reply: "(无发现)" }; }
+      return { reply: `结果:${name.split("_").slice(-2)[0]}` };
+    },
+  };
+  const res = await agent.tools.call("spawn_agent", { tasks: ["任务A", "任务B"], review: true }, { agent });
+  assert.ok(res.includes("【子任务1") && res.includes("【子任务2"), `两任务拼接, 实际: ${res.slice(0, 80)}`);
+  assert.ok(res.includes("✅ 审查通过"), "两任务均审查通过");
+  assert.equal(revCalls, 2, "两个独立审查者各审一次");
+  agent.shutdown();
+  fs.rmSync(agent.dataDir, { recursive: true, force: true });
+});
+
+test("spawn_agent review: 多任务 + arbitrate 聚合各方审查结果", async () => {
+  const agent = new PPXAgent({ root: tmp("revarb") });
+  agent.llm = { chat: async () => ({ content: "聚合结论: A 方案可行, B 有风险" }) };
+  agent._legion = {
+    spawnAgent: () => {},
+    send: async (name) => {
+      if (name.endsWith("_rev")) return { reply: "(无发现)" };
+      return { reply: "方案产出" };
+    },
+  };
+  const res = await agent.tools.call("spawn_agent", { tasks: ["评估A", "评估B"], review: true, arbitrate: true, judge: "综合", perspectives: ["风险视角", "成本视角"] }, { agent });
+  assert.ok(res.includes("聚合结论"), `仲裁生效, 实际: ${res.slice(0, 80)}`);
   agent.shutdown();
   fs.rmSync(agent.dataDir, { recursive: true, force: true });
 });
