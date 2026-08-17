@@ -35,6 +35,8 @@ export function registerDelegateTools(catalog, _opts = {}) {
           dataDir: path.join(agent.dataDir, "legion", name),
           globalDataDir: agent.globalDataDir,
         });
+        // 生命周期: 繁衍计数 (ANS: reproducing)
+        if (agent.lifecycle) agent.lifecycle.reproduced += 1;
         const reply = await Promise.race([
           L.send(name, { type: "chat", message: String(args.task).slice(0, 4000) }),
           new Promise((_, rej) => setTimeout(() => rej(new Error(`子任务超时 (${DELEGATE_TIMEOUT_MS / 1000}s)`)), DELEGATE_TIMEOUT_MS)),

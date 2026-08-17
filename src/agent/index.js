@@ -117,6 +117,9 @@ export class PPXAgent {
     this._lastTurnUsedTools = false;
     this._mcp = null; // MCP 连接句柄 (connectMcp 后赋值)
     this._personaBuilt = null; // L3 画像上次生成日期 (跨天刷新)
+    this._proactiveTimer = null; // 主动任务生成定时器
+    // 生命周期 (ANS): born → growing → mature → evolving; 繁衍: reproducing
+    this.lifecycle = { stage: "born", bornAt: Date.now(), chats: 0, evolved: 0, reproduced: 0, log: [] };
 
     // 可选: 启动时自动连接 MCP 服务器 (config.mcp.auto_connect = true 时非阻塞连接)
     if (this.config.mcp?.auto_connect && this.config.mcp.servers?.length) {
@@ -311,12 +314,21 @@ export class PPXAgent {
   // 组装记忆上下文
   _context(userMsg) {
     const base = this.persona.systemPrompt(this.userName) + "\n\n" + this.memory.context(userMsg) + "\n\n" + this.experience.context() + this._l3Context();
+    // 核心价值 (ANS 价值对齐): 注入最前, 独立于 prompt, 不可被后续指令违背
+    const values = this._valuesPrompt();
     // 引用规则 + 额外 system 内容均可配置 (agent.citation_rule / agent.system_extra)
     const citation = this.config.agent?.citation_rule || "";
     const extra = this.config.agent?.system_extra || "";
     const active = this.scenes.activeContext(userMsg || "");
     const baseCtx = active ? base + "\n\n" + active : base;
-    return [baseCtx, citation, extra].filter(Boolean).join("\n\n");
+    return [values, baseCtx, citation, extra].filter(Boolean).join("\n\n");
+  }
+
+  // 核心价值文本: 数组 → 固定格式注入 (无值时不注入, 向后兼容)
+  _valuesPrompt() {
+    const values = this.config.agent?.values;
+    if (!Array.isArray(values) || !values.length) return "";
+    return "【核心价值·不可违背】\n" + values.map((v) => "- " + v).join("\n");
   }
 
   // L3 画像注入: 已生成的用户画像 + agent 自我画像 (未生成返回 "")
@@ -387,7 +399,39 @@ export class PPXAgent {
       // L3 画像: 跨天刷新 (吸收新记忆/经验)
       this._maybeRefreshPersona();
     }
+    // 生命周期推进: 每次对话计数, 阶段转换 born→growing→mature
+    this._lifecycleTick();
     return reply;
+  }
+
+  // 生命周期: 对话计数 + 阶段转换 (ANS: 诞生→成长→成熟)
+  _lifecycleTick() {
+    this.lifecycle.chats += 1;
+    const lc = this.lifecycle;
+    if (lc.stage === "born") { this._lifecycleTo("growing", "首次对话"); }
+    else if (lc.stage === "growing" && lc.chats >= 10) { this._lifecycleTo("mature", `完成 ${lc.chats} 次对话`); }
+  }
+
+  // 记录阶段转换 (ANS: 生命阶段推进), 保留日志
+  _lifecycleTo(stage, note) {
+    this.lifecycle.stage = stage;
+    this.lifecycle.log.push({ stage, note, ts: Date.now() });
+    if (this.lifecycle.log.length > 50) this.lifecycle.log.shift();
+    info(`[lifecycle] ${stage}: ${note}`);
+  }
+
+  // 生命周期摘要 (可观测)
+  lifecycleStatus() {
+    const lc = this.lifecycle;
+    return {
+      stage: lc.stage,
+      bornAt: new Date(lc.bornAt).toISOString(),
+      ageMs: Date.now() - lc.bornAt,
+      chats: lc.chats,
+      evolved: lc.evolved,
+      reproduced: lc.reproduced,
+      recent: lc.log.slice(-5),
+    };
   }
 
 
@@ -618,6 +662,7 @@ export class PPXAgent {
     const m = String(userMsg).match(/经验交给皮皮虾[:：]\s*(.+)/i);
     if (m) {
       this.experience.learn({ task: "用户主动分享", lesson: m[1], tags: ["user-shared"] });
+      if (this.lifecycle) this.lifecycle.evolved += 1; // 生命周期: 进化计数
       info(`学到经验: ${m[1]}`);
     }
   }
@@ -641,6 +686,7 @@ export class PPXAgent {
     } catch { lesson = ""; }
     if (!lesson) return { distilled: 0, reason: "LLM 未产出经验" };
     this.experience.learn({ task: "自动提炼", lesson, tags: ["auto-refine"] });
+    if (this.lifecycle) this.lifecycle.evolved += 1; // 生命周期: 进化计数
     info(`[refine] 学到经验: ${lesson}`);
     return { distilled: 1, lesson };
   }
@@ -718,6 +764,46 @@ export class PPXAgent {
     };
   }
 
+  // 主动任务生成 (ANS 自主性): 扫描 L1 记忆里的待办/偏好, 生成 1-3 条主动提醒
+  // config.agent.proactive.enabled 才接定时器; 本方法可被命令/通道主动调用
+  async proactiveSuggest() {
+    try {
+      if (!this.facts) return null;
+      const pending = this.facts.list()
+        .filter((f) => f && /待办|需要|记得|计划|还没|未完成|想|要|必须/.test(String(f.content || "")))
+        .slice(0, 5);
+      if (!pending.length) return null;
+      const lines = pending.map((f) => "- " + String(f.content || "").slice(0, 100));
+      if (!this.llm) return "【主动提醒】你之前提到过:\n" + lines.join("\n");
+      const r = await this.llm.chat([
+        { role: "system", content: "你是主动助手。基于用户历史提到的待办/偏好, 生成 1-3 条简短主动提醒 (每条 ≤30 字, 直接输出, 不要客套)。" },
+        { role: "user", content: lines.join("\n") },
+      ]);
+      return r.content || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // 启动主动任务生成定时器 (config.agent.proactive.enabled 才启用)
+  startProactiveTicker(cb) {
+    const cfg = this.config.agent?.proactive;
+    if (!cfg || !cfg.enabled) return null;
+    const ms = Number(cfg.interval_ms) || 3600000;
+    this._proactiveTimer = setInterval(async () => {
+      try {
+        const msg = await this.proactiveSuggest();
+        if (msg && typeof cb === "function") { try { cb(msg); } catch {} }
+      } catch {}
+    }, ms);
+    info(`[proactive] 主动任务生成已启动 (每 ${Math.round(ms / 60000)} 分钟)`);
+    return this._proactiveTimer;
+  }
+
+  stopProactiveTicker() {
+    if (this._proactiveTimer) { clearInterval(this._proactiveTimer); this._proactiveTimer = null; }
+  }
+
   // 接入 MCP 服务器: 连接 + 注册工具到 catalog (可选能力, 显式调用)
   // servers 缺省用 config.mcp.servers; 返回注册的工具数
   async connectMcp(servers = null) {
@@ -755,6 +841,7 @@ export class PPXAgent {
   }
 
   shutdown() {
+    this.stopProactiveTicker();
     this._mcp?.close?.();
     this.memory._saveState?.();
     this.healer.markClean();
