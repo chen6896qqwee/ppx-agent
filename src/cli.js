@@ -25,6 +25,16 @@ const rl = readline.createInterface({
 
 let busy = false; // 防止任务执行中重复输入
 
+// 主动任务生成定时器 (ANS 自主性): config.agent.proactive.enabled 时启动
+// 有待办信号才推送 (suggestProactive 无信号返回 null 不打扰), 输出到 stdout
+if (agent.config.agent?.proactive?.enabled) {
+  agent.startProactiveTicker((payload) => {
+    console.log("\n[主动提醒] " + payload.text);
+    rl.prompt();
+  });
+  console.log(`  (主动提醒已开启: 每 ${Math.round(agent.config.agent.proactive.interval_ms / 60000)} 分钟扫描记忆待办)`);
+}
+
 rl.on("line", async (line) => {
   const text = line.trim();
   if (!text) return rl.prompt();

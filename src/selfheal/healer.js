@@ -96,6 +96,29 @@ walk(this.dataDir);
     if (removed.length) info("selfheal: 清理旧 corrupt 备份 " + removed.length + " 个: " + removed.join(", "));
     return removed;
   }
+
+  // 清理历史手动备份目录 (memory-backup-*): 保留最近 N 个, 更早自动删除 (默认保留 2)
+  // 手动全量备份目录不在 corrupt 备份机制内, 若无清理会持续累积磁盘占用
+  cleanupStaleBackupDirs(keep = 2) {
+    if (!fs.existsSync(this.dataDir)) return [];
+    const dirs = [];
+    for (const f of fs.readdirSync(this.dataDir)) {
+      if (!f.startsWith("memory-backup-")) continue;
+      const p = path.join(this.dataDir, f);
+      let st;
+      try { st = fs.statSync(p); } catch { continue; }
+      if (!st.isDirectory()) continue;
+      dirs.push({ p, mtime: st.mtimeMs });
+    }
+    dirs.sort((a, b) => b.mtime - a.mtime);
+    const removed = [];
+    for (const d of dirs.slice(keep)) {
+      try { fs.rmSync(d.p, { recursive: true, force: true }); removed.push(path.basename(d.p)); }
+      catch (e) { warn("cleanup stale backup dir failed: " + d.p + ": " + e.message); }
+    }
+    if (removed.length) info("selfheal: 清理旧手动备份目录 " + removed.length + " 个: " + removed.join(", "));
+    return removed;
+  }
   
   // 完整自愈入口
   heal() {
@@ -103,7 +126,9 @@ walk(this.dataDir);
     const crash = this.checkCrash();
     // 清理历史 corrupt 备份 (保留最近 2 个, 更早自动删除) — 之前漏调用导致 corrupt 持续累积
     const cleanedCorrupt = this.cleanupCorruptBackups(2);
-    const report = { fixes, crashed: crash.crashed, crashDetail: crash.detail, cleanedCorrupt };
+    // 清理历史手动备份目录 (保留最近 2 个)
+    const cleanedBackupDirs = this.cleanupStaleBackupDirs(2);
+    const report = { fixes, crashed: crash.crashed, crashDetail: crash.detail, cleanedCorrupt, cleanedBackupDirs };
     if (fixes.length) info(`selfheal: 修复 ${fixes.length} 项: ${fixes.join("; ")}`);
     else info("selfheal: 无异常");
     if (crash.crashed) warn(`selfheal: 检测到崩溃残留 -> ${crash.detail}`);

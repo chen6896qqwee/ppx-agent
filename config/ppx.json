@@ -1,7 +1,14 @@
 {
   "agent": {
     "name": "皮皮虾",
-    "yuan": "ppx"
+    "yuan": "ppx",
+    "max_tool_rounds": 8,
+    "tool_result_budget": 4000,
+    "max_tool_error_retry": 2,
+    "proactive": {
+      "enabled": true,
+      "interval_ms": 3600000
+    }
   },
   "user": {
     "name": "兄弟"
@@ -98,6 +105,10 @@
       "enabled": true,
       "port": 8899,
       "auth_token": ""
+    },
+    "log": {
+      "enabled": true,
+      "target": "console"
     },
     "feishu": {
       "enabled": false,

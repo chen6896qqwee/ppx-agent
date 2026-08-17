@@ -26,6 +26,10 @@ export const DEFAULT_CONFIG = {
     ],
     // 主动任务生成 (ANS 自主性): 定时扫描记忆生成主动提醒, 默认关闭避免打扰
     proactive: { enabled: false, interval_ms: 3600000 },
+    // 工具循环阈值 (可调): 最大工具轮次 / 工具结果裁剪预算 / 工具错误重试次数
+    max_tool_rounds: 8,
+    tool_result_budget: 4000,
+    max_tool_error_retry: 2,
   },
   user: { name: "兄弟" },
   providers: [],

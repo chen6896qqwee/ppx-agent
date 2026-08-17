@@ -14,7 +14,9 @@ export async function startServer({ root = process.cwd(), port = 8899, host = "1
   }
 
   // 统一走注册表: HTTP 通道始终启动 (port/host 参数覆盖配置), 其余按 config.channels
-  const channelsCfg = { ...(config.channels || {}) };
+  // 基础配置来自 agent.config (config/ppx.json 加载的), 调用方传入的 config.channels 只做覆盖
+  const baseChannels = agent.config.channels || {};
+  const channelsCfg = { ...baseChannels, ...((config.channels) || {}) };
   channelsCfg.http = { enabled: true, port, host, ...(channelsCfg.http || {}) };
   const manager = new ChannelManager(agent, channelsCfg);
   await manager.start();

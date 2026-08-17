@@ -1,5 +1,22 @@
 ﻿# CHANGELOG
 
+## v1.0.1 (2026-08-17) — 全面优化: CI/CD + 阈值可调 + 主动提醒通电
+
+依据 EVALUATION-2026-08-17 六项整改全部落地。
+
+### P0 持续验证机制
+- **CI/CD**: 新增 `.github/workflows/ci.yml` — push/PR 自动跑 Node 20/22 全量测试 + web tsc --noEmit + 生产构建 + 本地能力评测
+- **README 同步**: 测试统计 368/365 → 370/367
+
+### P1 LLM 端到端回归 + 阈值可调
+- **eval.js 升级**: provider 三选一 — `--provider <id>`(config) / `PPX_E2E_*` 环境变量(CI 注入真实 key) / LM Studio 兜底; 新增 `--quick` 跳过 LLM 层
+- **阈值 config 化**: `MAX_TOOL_ROUNDS` / `TOOL_RESULT_BUDGET` / `MAX_TOOL_ERROR_RETRY` 硬编码 → `config.agent.{max_tool_rounds,tool_result_budget,max_tool_error_retry}` (DEFAULT_CONFIG + ppx.json 双份)
+
+### P2 数据卫生 + 主动提醒通电
+- **自愈增强**: `Healer.cleanupStaleBackupDirs()` 自动清理 `memory-backup-*` 手动备份目录 (保留最近 2 个), heal() 内调用; 清理 8/14 旧备份残留
+- **主动提醒通电**: 修复 server.js 通道配置 bug (原来只读调用方 config, 不读 config/ppx.json, 导致 channels.log 永远不启用) — 现在以 agent.config.channels 为基础合并; CLI 也接入 proactive ticker 输出 stdout; config/ppx.json 默认启用 log 通道 + proactive
+- **验证**: 全量测试 370 项 367 过 0 失败 3 跳过 (新增 4 项: cleanupStaleBackupDirs 保留/不误删), proactive→ChannelManager→log 链路实测广播成功
+
 ## v1.0.0 (2026-08-17) — 独立自包含 + 可发布
 
 皮皮虾从「依赖 OpenClaw/dsh 外部引擎的壳」进化为「独立自包含、零外部引擎依赖」的 agent，并补齐分发链路。这是首个正式版。

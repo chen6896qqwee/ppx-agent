@@ -19,9 +19,10 @@ import { suggestProactive } from "../ans/proactive.js";
 import { SkillLoader } from "../skills/loader.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const MAX_TOOL_ROUNDS = 8;
-const TOOL_RESULT_BUDGET = 4000; // L4 toolResultBudget: 工具结果超过此长度裁剪, 防撑爆上下文
-const MAX_TOOL_ERROR_RETRY = 2;
+// 阈值默认值 (可通过 config.agent.max_tool_rounds / tool_result_budget / max_tool_error_retry 覆盖)
+const DEFAULT_MAX_TOOL_ROUNDS = 8;
+const DEFAULT_TOOL_RESULT_BUDGET = 4000; // L4 toolResultBudget: 工具结果超过此长度裁剪, 防撑爆上下文
+const DEFAULT_MAX_TOOL_ERROR_RETRY = 2;
 // 会话历史条数/token 预算已迁到 config.memory (max_history_items / history_token_budget)
 
 // LLM 调用失败的兜底提示: 附排查指引, 避免裸抛错误对用户不友好
@@ -33,13 +34,13 @@ export function LLM_FAILED_HINT(message) {
 // 估算 token: 中文字符约1字=0.6token, 1token约4字符
 function estimateTokens(s){ return Math.ceil(String(s||'').length / 1.6); }
 
-// L4 toolResultBudget: 裁剪超长工具结果, 保留头尾关键信息
-export function trimToolResult(r) {
+// L4 toolResultBudget: 裁剪超长工具结果, 保留头尾关键信息 (默认 4000, config.agent.tool_result_budget 可调)
+export function trimToolResult(r, budget = DEFAULT_TOOL_RESULT_BUDGET) {
   const s = String(r || "");
-  if (s.length <= TOOL_RESULT_BUDGET) return s;
-  const head = s.slice(0, TOOL_RESULT_BUDGET * 0.7);
-  const tail = s.slice(-TOOL_RESULT_BUDGET * 0.3);
-  return head + `\n...[结果已裁剪: 共 ${s.length} 字符, 保留头尾 ${TOOL_RESULT_BUDGET}]...\n` + tail;
+  if (s.length <= budget) return s;
+  const head = s.slice(0, budget * 0.7);
+  const tail = s.slice(-budget * 0.3);
+  return head + `\n...[结果已裁剪: 共 ${s.length} 字符, 保留头尾 ${budget}]...\n` + tail;
 }
 
 // 多模态: 提取 user 消息中的图片路径并同步读图, 注入为 OpenAI 视觉格式的 content 数组。
@@ -64,12 +65,12 @@ function _visionUserContent(llm, root, userMsg) {
 }
 
 // 工具结果 → OpenAI 消息 content: 图片 data URL 转 image_url 块 (多模态), 否则文本裁剪
-export function toToolContent(result) {
+export function toToolContent(result, budget = DEFAULT_TOOL_RESULT_BUDGET) {
   const s = String(result || "");
   if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(s)) {
     return [{ type: "image_url", image_url: { url: s } }];
   }
-  return trimToolResult(s);
+  return trimToolResult(s, budget);
 }
 
 export class PPXAgent {
@@ -562,11 +563,15 @@ export class PPXAgent {
   async _llmWithTools(seedMessages, llmInstance = this.llm) {
     const messages = [...seedMessages];
     const tools = this.toolsEnabled ? this.tools.toOpenAI() : [];
+    // 阈值从 config 读取 (可调), 默认值兜底
+    const maxRounds = Number(this.config.agent?.max_tool_rounds) || DEFAULT_MAX_TOOL_ROUNDS;
+    const resultBudget = Number(this.config.agent?.tool_result_budget) || DEFAULT_TOOL_RESULT_BUDGET;
+    const maxErrorRetry = Number(this.config.agent?.max_tool_error_retry) || DEFAULT_MAX_TOOL_ERROR_RETRY;
     let errorRetries = 0;
 
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    for (let round = 0; round < maxRounds; round++) {
       if (this._interrupted) return "[interrupted] task cancelled by operator.";
-      if (this._onStepEvent) { try { this._onStepEvent({ type: "step", round, maxRounds: MAX_TOOL_ROUNDS, ts: Date.now() }); } catch {} }
+      if (this._onStepEvent) { try { this._onStepEvent({ type: "step", round, maxRounds, ts: Date.now() }); } catch {} }
       const resp = await llmInstance.apiChat(messages, {
         tools,
         toolRunner: async (name, args) => this._runTool(name, args, llmInstance),
@@ -596,11 +601,11 @@ export class PPXAgent {
             durationMs: Date.now() - t0,
             error: result.startsWith(TOOL_ERROR_PREFIX) ? result : null,
           });
-          messages.push({ role: "tool", tool_call_id: tc.id, content: toToolContent(result) });
+          messages.push({ role: "tool", tool_call_id: tc.id, content: toToolContent(result, resultBudget) });
           if (result.startsWith(TOOL_ERROR_PREFIX)) errors.push(result);
         }
       }
-      if (errors.length && errorRetries < MAX_TOOL_ERROR_RETRY) {
+      if (errors.length && errorRetries < maxErrorRetry) {
         errorRetries++;
         messages.push({
           role: "user",

@@ -2,21 +2,30 @@
 // scripts/eval.js - 统一 E2E 评测入口 (每次发版前跑一遍)
 // 分层评测:
 //   (1) 本地能力层 (必跑, 零依赖): 问候识别 / 时间工具 / 记忆闭环 / 生命周期 / 价值注入 / 文件工具
-//   (2) LLM 端到端层 (--llm 或自动探活到 LM Studio): LLM 直连 5 case + 记忆闭环 (复用 e2e-response-smoke 思路)
+//   (2) LLM 端到端层 (--llm): LLM 直连 5 case + 记忆闭环 (复用 e2e-response-smoke 思路)
+//       provider 选择优先级:
+//         a. --provider <id>          从 config/ppx.json 取指定 provider
+//         b. PPX_E2E_BASE_URL+KEY+MODEL 环境变量 (CI 注入, 跑真实回归)
+//         c. 自动探活 LM Studio (本地零 key 兜底)
 // 退出码: 任何失败 → 1 (可接 CI / npm script)
 //
 // 用法:
 //   node scripts/eval.js                 # 本地能力评测 (无 LLM 也能跑)
-//   node scripts/eval.js --llm           # 本地能力 + LLM 端到端 (探活 LM Studio)
-//   node scripts/eval.js --quick         # 只跑本地能力, 不探活 LLM
+//   node scripts/eval.js --llm           # 本地能力 + LLM 端到端 (自动选 provider)
+//   node scripts/eval.js --provider deepseek --llm   # 用 config 里指定 provider
+//   node scripts/eval.js --llm --quick   # 只跑本地能力, 不探活 LLM
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { PPXAgent } from "../src/agent/index.js";
+import { loadConfig } from "../src/config/index.js";
 
-const ROOT = path.join(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const wantLLM = args.includes("--llm");
+const wantQuick = args.includes("--quick");
+const providerId = args.includes("--provider") ? args[args.indexOf("--provider") + 1] : null;
 
 let pass = 0, fail = 0;
 const results = [];
@@ -75,20 +84,48 @@ async function localCapabilities() {
 }
 
 // ---- (2) LLM 端到端层 ----
+// provider 解析优先级: --provider 指定 > PPX_E2E_* 环境变量 > LM Studio 本地兜底
+function resolveE2EProvider() {
+  // a. --provider <id>: 从 config/ppx.json 取
+  if (providerId) {
+    try {
+      const cfg = loadConfig(ROOT);
+      const prov = (cfg.providers || []).find((p) => p && p.id === providerId);
+      if (prov) return { source: "config:" + providerId, config: { ...prov } };
+      console.log(`  ✗ --provider ${providerId} 不在 config/ppx.json providers 里`);
+    } catch { /* 配置读取失败, 继续下一种 */ }
+  }
+  // b. PPX_E2E_* 环境变量 (CI 注入)
+  if (process.env.PPX_E2E_BASE_URL) {
+    return {
+      source: "env PPX_E2E_*",
+      config: {
+        id: "e2e",
+        base_url: process.env.PPX_E2E_BASE_URL,
+        api_key: process.env.PPX_E2E_API_KEY || "lm-studio",
+        model: process.env.PPX_E2E_MODEL || "default",
+        vision: true,
+        timeout_ms: 120000,
+      },
+    };
+  }
+  // c. LM Studio 本地兜底
+  const MODEL = process.env.PPX_E2E_MODEL || "qwen3.5-9b-the-defiant-fable-uncnr-heretic-neo-max-mtp";
+  return { source: "lmstudio 兜底", config: { id: "lmstudio", base_url: "http://127.0.0.1:1234/v1", api_key: "lm-studio", model: MODEL, vision: true, timeout_ms: 120000 } };
+}
+
 async function llmE2E() {
   console.log("\n── (2) LLM 端到端层 ──");
   const { LLMClient } = await import("../src/llm/client.js");
-  const MODEL = process.env.PPX_E2E_MODEL || "qwen3.5-9b-the-defiant-fable-uncnr-heretic-neo-max-mtp";
-  const config = { id: "lmstudio", base_url: "http://127.0.0.1:1234/v1", api_key: "lm-studio", model: MODEL, vision: true, timeout_ms: 120000 };
-
+  const { source, config } = resolveE2EProvider();
   const client = new LLMClient(config);
   let healthy = false;
   try { healthy = await client.health(); } catch {}
   if (!healthy) {
-    check("LLM 探活", false, "LM Studio 不可达 (http://127.0.0.1:1234/v1) — 跳过 LLM 端到端");
+    check("LLM 探活", false, `${source} 不可达 (${config.base_url}) — 跳过 LLM 端到端`);
     return;
   }
-  console.log(`  → LM Studio ${MODEL} 可达, 跑真实链路`);
+  console.log(`  → ${source} (${config.model}) 可达, 跑真实链路`);
 
   const CASES = [
     { name: "基础问答", prompt: "1+1 等于几？只回答数字。", expect: ["2"] },
@@ -136,7 +173,8 @@ async function llmE2E() {
 (async () => {
   console.log("皮皮虾 E2E 评测 | " + new Date().toISOString().replace("T", " ").slice(0, 19) + "\n");
   await localCapabilities();
-  if (wantLLM) await llmE2E();
+  if (wantLLM && !wantQuick) await llmE2E();
+  else if (wantLLM && wantQuick) console.log("\n── (2) LLM 端到端层 ──\n  (--quick 跳过 LLM 端到端)");
   console.log(`\n=== 结果: ${pass} 过 / ${fail} 挂 ===`);
   process.exit(fail > 0 ? 1 : 0);
 })().catch((e) => { console.error("✗ 评测异常:", e.message); process.exit(1); });

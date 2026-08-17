@@ -36,3 +36,33 @@ test("heal(): corrupt 不足 2 个时不误删", () => {
   assert.ok(fs.existsSync(path.join(memDir, "facts.json.corrupt-0")), "文件应保留");
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("heal(): 自动清理旧手动备份目录 (memory-backup-*), 保留最近 2 个", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-heal3-"));
+  fs.mkdirSync(path.join(root, "data"), { recursive: true });
+  // 造 3 个备份目录, mtime 依次递增 (backup-2 最新)
+  for (let i = 0; i < 3; i++) {
+    const d = path.join(root, "data", `memory-backup-${i}`);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, "facts.json"), `{}`);
+    const t = new Date(Date.now() - (3 - i) * 60000);
+    fs.utimesSync(d, t, t);
+  }
+  const healer = new Healer(root);
+  const report = healer.heal();
+  assert.equal(report.cleanedBackupDirs.length, 1, "应清理 1 个最旧的手动备份目录");
+  const remaining = fs.readdirSync(path.join(root, "data")).filter((f) => f.startsWith("memory-backup-")).sort();
+  assert.deepEqual(remaining, ["memory-backup-1", "memory-backup-2"], "应保留最近 2 个");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("heal(): 手动备份目录不足 2 个时不误删", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-heal4-"));
+  fs.mkdirSync(path.join(root, "data", "memory-backup-0"), { recursive: true });
+  fs.writeFileSync(path.join(root, "data", "memory-backup-0", "facts.json"), `{}`);
+  const healer = new Healer(root);
+  const report = healer.heal();
+  assert.equal(report.cleanedBackupDirs.length, 0, "1 个备份目录不应删除");
+  assert.ok(fs.existsSync(path.join(root, "data", "memory-backup-0")), "目录应保留");
+  fs.rmSync(root, { recursive: true, force: true });
+});
