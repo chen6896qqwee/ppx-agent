@@ -82,7 +82,9 @@ ${lines.join("\n")}\n`);
       try {
         const facts = await this.extractor(String(user || ""), String(assistant || ""));
         if (facts && facts.length) {
-          for (const f of facts) this.factStore.add(f, { source: "extract" });
+          // similarThreshold=0.6: LLM 提炼的字面变体 (同义不同词) 与已有事实语义相似时命中加分,
+          // 防「三件套」这类反复提炼的变体污染记忆库
+          for (const f of facts) this.factStore.add(f, { source: "extract", similarThreshold: 0.6 });
           return;
         }
       } catch {}

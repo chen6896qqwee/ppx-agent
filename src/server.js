@@ -17,7 +17,7 @@ export async function startServer({ root = process.cwd(), port = 8899, host = "1
   // 基础配置来自 agent.config (config/ppx.json 加载的), 调用方传入的 config.channels 只做覆盖
   const baseChannels = agent.config.channels || {};
   const channelsCfg = { ...baseChannels, ...((config.channels) || {}) };
-  channelsCfg.http = { enabled: true, port, host, ...(channelsCfg.http || {}) };
+  channelsCfg.http = { ...(channelsCfg.http || {}), enabled: true, port, host }; // port/host 参数最高优先级
   const manager = new ChannelManager(agent, channelsCfg);
   await manager.start();
 

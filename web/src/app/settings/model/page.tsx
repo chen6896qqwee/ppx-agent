@@ -89,7 +89,7 @@ export default function ModelSettingsPage() {
                     <span className={`h-2 w-2 rounded-full ${ready ? "bg-[#3ddc84]" : "bg-[#ff6b6b]"}`} title={ready ? "已就绪" : "未配置"}></span>
                     {p.id === defaultId && <span className="rounded-full bg-[#0f3d24] px-2 py-0.5 text-[10px] text-[#3ddc84]">默认</span>}
                     {p.backend && p.backend !== "http" && <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400">{p.backend}</span>}
-                    {p.vision && <span className="rounded-full bg-[#1d2a3a] px-2 py-0.5 text-[10px] text-[#4da3ff]">vision</span>}
+                    {p.vision && <span className="rounded-full bg-[#1d2a3a] px-2 py-0.5 text-[10px] text-[#4da3ff]">视觉</span>}
                   </div>
                   <div className="mt-1 text-[11px] text-neutral-600 truncate">
                     {p.base_url ? `${p.base_url} · ${p.model || "(未选模型)"}` : p.mjs ? `openclaw: ${p.mjs}` : p.dsh_root ? `dsh: ${p.dsh_root}` : "(无端点)"}

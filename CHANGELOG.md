@@ -1,5 +1,28 @@
 ﻿# CHANGELOG
 
+## v1.0.2 (2026-08-17) — 记忆去重闭环 + 语言统一中文
+
+依据 EVALUATION-2026-08-17 (第二轮) 整改: 修复记忆层重复污染 + web 语言统一。
+
+### P0 记忆去重闭环 (三层)
+- **经验库内容去重**: `Experience.learn()` 按 lesson 归一化查重, 命中则 uses+1 并刷新时间, 不新增 — 消除高频学习路径写放大 (src/memory/experience.js)
+- **记忆语义去重**: `FactStore.findSimilar()` (bigram Jaccard) + `add(similarThreshold)` 可选参数 — LLM 提炼的字面变体 (同义不同词) 与已有事实相似度达标时命中加分而非新增; `memory-ticker` extractor 通道默认启用 (阈值 0.6)
+- **L3 画像展示去重**: `buildUserPersona` / `buildAgentPersona` 展示前 `_uniqByContent` 去重 (src/memory/l3.js)
+- **存量清理**: 经验库 60→2 条 (59 条重复「零依赖」), facts 35→19 条 (12 条「三件套」变体→2 条), L3 画像 force 重建; 备份保留 .bak-dedupe / .bak-simdedupe
+- **工具沉淀**: `scripts/dedupe-facts.js` 新增 `--similar <阈值>` 语义去重选项
+
+### P1 web 语言统一中文 + 字体本地化
+- `layout.tsx` `lang="en"` → `lang="zh-CN"`; 移除 `next/font/google` (Geist) 依赖 → 系统字体栈 (无网/国内 build 不挂)
+- 界面英文残留清零: 「vision」标签→「视觉」、「Enter 发送」→「回车发送」、「Agent 预设」→「智能体预设」
+- `globals.css` body font-family 引用 `var(--font-sans)` 统一
+
+### 修复
+- `server.js` 通道配置合并 bug: port/host 参数优先级低于 config 端口, 导致测试动态端口 (port=0) 失效 — 改为 port/host 参数最高优先级
+
+### 验证
+- 全量测试 382 项 379 过 0 失败 3 跳过 (新增 12 项: dedupe-adv 9 + server-channels 3)
+- web tsc --noEmit 0 错误
+
 ## v1.0.1 (2026-08-17) — 全面优化: CI/CD + 阈值可调 + 主动提醒通电
 
 依据 EVALUATION-2026-08-17 六项整改全部落地。

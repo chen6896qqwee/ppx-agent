@@ -24,6 +24,8 @@ export class PersonaStore {
     const USER_SOURCES = ["conversation", "extract", "agent-self", "manual", "user-shared"];
     const userFacts = facts.filter((f) => USER_SOURCES.includes(f.source) || USER_SOURCES.includes(f.type));
     const interests = this._topTopics(userFacts);
+    // 记忆概要: 内容去重后取最近 10 条 (防 LLM 提炼变体/重复记忆稀释画像)
+    const uniq = this._uniqByContent(userFacts).slice(-10);
     const md = `# ${this.userName} 的用户画像
 
 > 由皮皮虾 L3 画像引擎生成 | 更新: ${logicalDay()}
@@ -32,7 +34,7 @@ export class PersonaStore {
 ${interests.length ? interests.map(([w, n]) => `- ${w} (出现${n}次)`).join("\n") : "- 暂无足够数据"}
 
 ## 记忆概要
-${userFacts.slice(-10).map((f) => `- ${f.content}`).join("\n") || "- 暂无"}
+${uniq.map((f) => `- ${f.content}`).join("\n") || "- 暂无"}
 
 ## 画像版本
 - 生成时间: ${logicalDay()}
@@ -45,12 +47,14 @@ ${userFacts.slice(-10).map((f) => `- ${f.content}`).join("\n") || "- 暂无"}
   // 提炼 agent 自身人格 (从经验/工具使用学习)
   buildAgentPersona(lessons, { force = false } = {}) {
     if (!force && this._exists(this.agentFile)) return this._read(this.agentFile);
+    // 学到的经验: 内容去重后取最近 10 条 (防重复经验污染自我画像)
+    const uniq = this._uniqByContent(lessons, (l) => l.lesson).slice(-10);
     const md = `# 皮皮虾 自我画像
 
 > 从经验库自动学习 | 更新: ${logicalDay()}
 
 ## 学到的经验
-${lessons.slice(-10).map((l) => `- ${l.lesson}`).join("\n") || "- 暂无"}
+${uniq.map((l) => `- ${l.lesson}`).join("\n") || "- 暂无"}
 
 ## 能力画像
 - 工具: 文件操作 / 命令执行 / 搜索 / HTTP / 定时任务
@@ -60,6 +64,19 @@ ${lessons.slice(-10).map((l) => `- ${l.lesson}`).join("\n") || "- 暂无"}
 `;
     writeText(this.agentFile, md);
     return md;
+  }
+
+  // 内容去重: 按归一化内容 (去空白折叠) 过滤, 保留首次出现的条目
+  _uniqByContent(items, pick = (x) => x.content) {
+    const seen = new Set();
+    const out = [];
+    for (const it of items || []) {
+      const key = String(pick(it) || "").trim().replace(/\s+/g, " ");
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(it);
+    }
+    return out;
   }
 
   // 读取已生成的画像 (供 agent._context 注入; 未生成返回 "")

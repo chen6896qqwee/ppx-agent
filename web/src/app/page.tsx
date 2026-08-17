@@ -121,7 +121,7 @@ export default function Home() {
         </div>
         {busyInfo && <div className="border-t border-neutral-800 px-5 pt-2 text-[12px] text-[#4da3ff]">{busyInfo}</div>}
         <footer className="flex gap-2 border-t border-neutral-800 p-4">
-          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="输入消息，Enter 发送" className="flex-1 rounded-xl border border-neutral-700 bg-neutral-900 px-4 py-2.5 text-sm outline-none focus:border-[#1d5cff]" />
+          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="输入消息，回车发送" className="flex-1 rounded-xl border border-neutral-700 bg-neutral-900 px-4 py-2.5 text-sm outline-none focus:border-[#1d5cff]" />
           <button onClick={send} disabled={busy} className="rounded-xl bg-[#1d5cff] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50">{busy ? "…" : "发送"}</button>
         </footer>
       </main>
