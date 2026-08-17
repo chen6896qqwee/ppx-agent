@@ -59,6 +59,13 @@ export class Legion extends EventEmitter {
         } catch {}
       }
     });
+    proc.on("error", (err) => {
+      // v1.0.8: spawn 失败 (node bin 不存在等) 兜底, 拒绝所有 pending, 防永久挂起
+      error(`agent[${name}] 启动失败: ${err.message}`);
+      for (const [, { reject }] of entry.pending) reject(new Error(`agent ${name} 启动失败`));
+      entry.pending.clear();
+      this.agents.delete(name);
+    });
     proc.on("exit", (code) => {
       info(`agent[${name}] 退出 code=${code}`);
       // 拒绝所有 pending
@@ -72,17 +79,31 @@ export class Legion extends EventEmitter {
   }
 
   // 向某 agent 发消息, 返回 Promise (onProgress 可选: 接收 step 中间事件)
-  send(name, msg, { onProgress } = {}) {
+  // v1.0.8: 超时兜底 (默认 30s), worker 卡死/异常不导致 pending 永久挂起
+  send(name, msg, { onProgress, timeout = 30000 } = {}) {
     const entry = this.agents.get(name);
     if (!entry || entry.proc.exitCode !== null) {
       return Promise.reject(new Error(`agent ${name} 未运行`));
     }
     const id = ++entry.counter;
-    const promise = new Promise((resolve, reject) => {
-      entry.pending.set(id, { resolve, reject, onProgress });
-      entry.proc.stdin.write(JSON.stringify({ id, ...msg }) + "\n");
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        entry.pending.delete(id);
+        reject(new Error(`agent ${name} 请求超时 (${timeout}ms)`));
+      }, timeout);
+      entry.pending.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+        onProgress,
+      });
+      try {
+        entry.proc.stdin.write(JSON.stringify({ id, ...msg }) + "\n");
+      } catch (e) {
+        clearTimeout(timer);
+        entry.pending.delete(id);
+        reject(new Error(`agent ${name} 写入失败: ${e.message}`));
+      }
     });
-    return promise;
   }
 
   // 并行派发: 同一任务广播给多个 agent, 最快返回
@@ -90,7 +111,7 @@ export class Legion extends EventEmitter {
     const names = [...this.agents.keys()];
     if (!names.length) throw new Error("军团为空, 先 spawnAgent");
     const results = await Promise.allSettled(
-      names.map((n) => this.send(n, { type, message }).catch((e) => ({ type: "error", error: e.message })))
+      names.map((n) => this.send(n, { type, message }, { timeout }).catch((e) => ({ type: "error", error: e.message })))
     );
     return names.map((n, i) => ({ agent: n, ...results[i] }));
   }
@@ -130,13 +151,16 @@ export class Legion extends EventEmitter {
   }
 
   // 关闭所有 agent
+  // v1.0.8: 先发 shutdown 优雅退出, 300ms 后兜底 kill 仍存活进程 (worker 无响应/卡死时不残留)
   async shutdownAll() {
-    const closes = [...this.agents.keys()].map((n) => {
-      try { this.send(n, { type: "shutdown" }).catch(() => {}); } catch {}
-    });
-    await Promise.all(closes);
+    for (const [name] of [...this.agents]) {
+      try { this.send(name, { type: "shutdown" }).catch(() => {}); } catch {}
+    }
     // 等待退出
     await new Promise((r) => setTimeout(r, 300));
+    for (const [name, entry] of [...this.agents]) {
+      try { entry.proc.kill(); } catch {}
+    }
   }
 
   list() {

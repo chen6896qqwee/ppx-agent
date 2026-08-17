@@ -28,9 +28,16 @@ export async function legionExecutor(agent, userMsg, { sessionKey = "default", l
   // 2. 编排: workflow(DAG) 优先, 否则 broadcast
   const wf = workflow || cfg.workflow;
   if (Array.isArray(wf) && wf.length) {
-    const { results } = await L.runDag({ nodes: wf });
-    const lines = Object.entries(results).map(([id, r]) => `【${id}】\n${r}`);
-    return lines.join("\n\n");
+    // v1.0.8: 校验节点结构 (需 {id, task}), 防字符串数组直接 TypeError
+    const bad = wf.find((n) => !n || typeof n !== "object" || !n.id || !n.task);
+    if (bad) return `[军团] workflow 节点需 {id, task} 对象, 非法节点: ${JSON.stringify(bad).slice(0, 80)}`;
+    try {
+      const { results } = await L.runDag({ nodes: wf });
+      const lines = Object.entries(results).map(([id, r]) => `【${id}】\n${r}`);
+      return lines.join("\n\n");
+    } catch (e) {
+      return `[军团] DAG 编排失败: ${e.message}`;
+    }
   }
 
   try {

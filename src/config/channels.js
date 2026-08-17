@@ -3,6 +3,7 @@
 // 用途: `ppx channels` CLI / HTTP API 让用户自己连通道, 不改源码
 import fs from "node:fs";
 import path from "node:path";
+import { withFileLock } from "../utils/store.js";
 import { warn } from "../utils/logger.js";
 
 // 每通道字段 schema: { type, label, def, secret }
@@ -93,7 +94,10 @@ export function validateChannel(name, patch) {
       if (!Number.isFinite(n)) { errors.push(`${name}.${key} 应为数字`); continue; }
       clean[key] = n;
     } else if (type === "boolean") {
-      clean[key] = !!val;
+      // v1.0.8: 识别字符串 "false"/"0" (原 !!val 会把 "false" 当 true)
+      if (val === true || val === "true" || val === 1 || val === "1") clean[key] = true;
+      else if (val === false || val === "false" || val === 0 || val === "0") clean[key] = false;
+      else { errors.push(`${name}.${key} 应为布尔`); continue; }
     } else {
       clean[key] = String(val);
     }
@@ -132,17 +136,20 @@ export function listChannels(root) {
 }
 
 // 更新通道配置 (patch 覆盖; 空字符串清空字段)
+// v1.0.8: 写盘在文件锁内读-改-写 (防并发丢更新)
 export function updateChannel(root, name, patch) {
-  const { channels, raw } = readChannels(root);
-  const { clean, errors } = validateChannel(name, patch);
-  if (errors.length) throw new Error(errors.join("; "));
-  const merged = { ...(channels[name] || {}), ...clean };
-  // 空字符串视为清空
-  for (const k of Object.keys(clean)) if (clean[k] === "") delete merged[k];
-  channels[name] = merged;
-  raw.channels = channels;
-  writeConfigAtomic(root, raw);
-  return sanitizeChannel(name, merged);
+  return withFileLock(getConfigPath(root), () => {
+    const { channels, raw } = readChannels(root);
+    const { clean, errors } = validateChannel(name, patch);
+    if (errors.length) throw new Error(errors.join("; "));
+    const merged = { ...(channels[name] || {}), ...clean };
+    // 空字符串视为清空
+    for (const k of Object.keys(clean)) if (clean[k] === "") delete merged[k];
+    channels[name] = merged;
+    raw.channels = channels;
+    writeConfigAtomic(root, raw);
+    return sanitizeChannel(name, merged);
+  });
 }
 
 // 启用/禁用
@@ -152,10 +159,12 @@ export function setChannelEnabled(root, name, enabled) {
 
 // 移除配置 (重置回默认, 即从 channels.<name> 删除)
 export function removeChannel(root, name) {
-  const { channels, raw } = readChannels(root);
-  const existed = name in channels;
-  delete channels[name];
-  raw.channels = channels;
-  writeConfigAtomic(root, raw);
-  return existed;
+  return withFileLock(getConfigPath(root), () => {
+    const { channels, raw } = readChannels(root);
+    const existed = name in channels;
+    delete channels[name];
+    raw.channels = channels;
+    writeConfigAtomic(root, raw);
+    return existed;
+  });
 }

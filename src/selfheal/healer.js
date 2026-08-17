@@ -91,7 +91,7 @@ walk(this.dataDir);
     const removed = [];
     for (const f of files.slice(keep)) {
       try { fs.unlinkSync(f.p); removed.push(path.basename(f.p)); }
-      catch (e) { warn("cleanup corrupt backup failed: " + f.p + ": " + e.message); }
+      catch (e) { warn("清理损坏备份失败: " + f.p + ": " + e.message); }
     }
     if (removed.length) info("selfheal: 清理旧 corrupt 备份 " + removed.length + " 个: " + removed.join(", "));
     return removed;
@@ -114,7 +114,7 @@ walk(this.dataDir);
     const removed = [];
     for (const d of dirs.slice(keep)) {
       try { fs.rmSync(d.p, { recursive: true, force: true }); removed.push(path.basename(d.p)); }
-      catch (e) { warn("cleanup stale backup dir failed: " + d.p + ": " + e.message); }
+      catch (e) { warn("清理过期备份目录失败: " + d.p + ": " + e.message); }
     }
     if (removed.length) info("selfheal: 清理旧手动备份目录 " + removed.length + " 个: " + removed.join(", "));
     return removed;
@@ -140,7 +140,7 @@ walk(this.dataDir);
     const removed = [];
     for (const f of files.slice(keep)) {
       try { fs.unlinkSync(f.p); removed.push(path.basename(f.p)); }
-      catch (e) { warn("cleanup stale bak file failed: " + f.p + ": " + e.message); }
+      catch (e) { warn("清理过期备份文件失败: " + f.p + ": " + e.message); }
     }
     if (removed.length) info("selfheal: 清理旧 .bak-* 备份文件 " + removed.length + " 个: " + removed.join(", "));
     return removed;

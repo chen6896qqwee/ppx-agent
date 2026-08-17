@@ -46,11 +46,12 @@ export class ChannelManager {
         console.warn(`[channels] ${name} 通道启动失败: ${e.message}`);
       }
     }
-    // webhook 型通道挂到 HTTP server (若已启动)
+    // webhook 型通道挂到 HTTP server (若已启动); 传 http 通道实例供 registerWebhook 路由分发
     if (this.httpServer) {
+      const httpCh = this.get("http") || null;
       for (const ch of this.channels) {
         if (ch.name !== "http" && typeof ch.mount === "function") {
-          try { ch.mount(this.httpServer); } catch (e) { console.warn(`[channels] ${ch.name} webhook 挂载失败: ${e.message}`); }
+          try { ch.mount(this.httpServer, httpCh); } catch (e) { console.warn(`[channels] ${ch.name} webhook 挂载失败: ${e.message}`); }
         }
       }
     }

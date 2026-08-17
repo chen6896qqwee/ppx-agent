@@ -174,6 +174,7 @@ export class PPXAgent {
       "run_command", "write_file", "code_act", "create_skill",
       "memory_add", "add_schedule", "remove_schedule",
       "scene_create", "scene_describe", "spawn_agent", "refine_skill",
+      "refine", // v1.0.8: refine 会写经验库, 只读审查者也不应触发
     ];
     for (const t of disabled) { try { this.tools.disable(t); } catch {} }
     this.readonly = true;
@@ -455,7 +456,7 @@ export class PPXAgent {
 
     const usedTools = this._lastTurnUsedTools;
     this._lastTurnUsedTools = false;
-    if (this._notifyCb && usedTools) this.notify("[done] task finished (tool-backed).");
+    if (this._notifyCb && usedTools) this.notify("[done] 任务完成 (工具执行)。");
 
     if (persist) {
       this._pushTurn(sessionKey, String(userMsg), reply);
@@ -885,6 +886,10 @@ export class PPXAgent {
   shutdown() {
     this.stopProactiveTicker();
     this._mcp?.close?.();
+    // v1.0.8: 清理军团子进程 (spawn_agent 派生的 worker), 防后台残留
+    if (this._legion && typeof this._legion.shutdownAll === "function") {
+      try { this._legion.shutdownAll(); } catch {}
+    }
     this.memory._saveState?.();
     this.healer.markClean();
   }

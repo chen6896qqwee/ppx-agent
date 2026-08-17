@@ -25,9 +25,17 @@ export class HttpChannel extends Channel {
     this.publicDir = path.join(this.agent.root, "public");
     this.authToken = process.env.PPX_AUTH_TOKEN || this._tokenFromConfig();
     this._buckets = new Map(); // ip -> {tokens, last}
+    // v1.0.8: webhook 路由注册表 (feishu/wechat 通道挂载), 单一 request handler 分发, 无多 listener 竞态
+    this.webhookRoutes = new Map(); // path -> async (req, res) => void
     // CORS 来源白名单 (v1.0.7): channels.http.cors_origin 数组; 未配置默认 * (向后兼容)
     // 配置后仅放行白名单 origin, 其余跨域请求 403 (token 泄露时降低任意跨站读取风险)
     this.corsOrigins = this._corsFromConfig();
+  }
+
+  // v1.0.8: webhook 通道注册路由 (路径匹配即由该通道处理, 不经过主逻辑)
+  registerWebhook(path, handler) {
+    if (typeof handler === "function") this.webhookRoutes.set(path, handler);
+    return () => this.webhookRoutes.delete(path);
   }
 
   _corsFromConfig() {
@@ -111,6 +119,15 @@ export class HttpChannel extends Channel {
   async connect() {
     this._ensureToken(); // 启动时确保有 token
     this.server = http.createServer(async (req, res) => {
+      // v1.0.8: webhook 路由分发 (feishu/wechat 等): 匹配路径交给对应通道, 不走主逻辑
+      const reqPath0 = (req.url || "/").split("?")[0];
+      const wh = this.webhookRoutes.get(reqPath0);
+      if (wh) {
+        try { await wh(req, res); } catch (e) {
+          try { if (!res.writableEnded) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: e.message })); } } catch {}
+        }
+        return;
+      }
       // CORS (v1.0.7): 默认 * (兼容); 配置 cors_origin 白名单时校验浏览器来源 (无 Origin 的非浏览器请求不受 CORS 约束)
       const origin = req.headers.origin;
       let allowOrigin = "*";

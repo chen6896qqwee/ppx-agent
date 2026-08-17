@@ -66,7 +66,7 @@
 
 ### 7. 多 agent 军团（多进程）
 
-`src/orchestrator/legion.js` spawn 独立 agent 子进程（`agent-worker.js`），支持 broadcast（广播取首答）/ dispatch（按角色分工）/ runDag（DAG 依赖编排）。子进程经 stdin/stdout JSON 行协议通信，step 事件实时上报进度。
+`src/orchestrator/legion.js` spawn 独立 agent 子进程（`agent-worker.js`），支持 broadcast（广播取首答）/ runDag（DAG 依赖编排）；`spawn_agent` 工具（`src/tools/delegate.js`）走并行/差异视角/仲裁/SDD 审查循环，是生产主力路径（`dispatch` 按角色分工保留为军团 API，生产无内置消费方）。子进程经 stdin/stdout JSON 行协议通信（请求带 id，worker 错误行回带 id，send 有 30s 超时兜底），step 事件实时上报进度。
 
 ### 8. 自愈引擎
 

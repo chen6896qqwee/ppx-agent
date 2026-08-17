@@ -27,7 +27,8 @@ export async function blackboardExecutor(agent, userMsg, { sessionKey = "default
   const board = new Board();
   board.set("task", String(userMsg));
 
-  const team = experts || DEFAULT_EXPERTS;
+  // v1.0.8: 空数组回退默认专家 (原 [] 时 last 为 undefined 静默返回空)
+  const team = (Array.isArray(experts) && experts.length) ? experts : DEFAULT_EXPERTS;
   for (const ex of team) {
     let r;
     try {

@@ -18,16 +18,29 @@ const DELEGATE_TIMEOUT_MS = 120000; // 子任务最长等待 (防卡死主 agent
 
 // ---- SDD review 循环: 纯函数 (可测) ----
 
+// 严重级标签映射 (v1.0.8): 内部表示 Critical/Important/Minor, 展示用中文, 解析兼容中英
+export function severityLabel(s) {
+  if (s === "Critical" || s === "严重" || s === "P0") return "严重";
+  if (s === "Important" || s === "重要" || s === "P1") return "重要";
+  return "次要";
+}
+function severityOf(token) {
+  if (token === "严重" || token === "P0") return "Critical";
+  if (token === "重要" || token === "P1") return "Important";
+  if (token === "Critical" || token === "Important") return token; // 英文 token 原样映射
+  return "Minor";
+}
+
 // 解析审查者输出 -> 发现列表 [{ severity, finding }]
-// 期望格式: 每行 "[Critical|Important|Minor] 描述", 无发现为 "(无发现)"
+// 期望格式: 每行 "[严重|重要|次要] 描述" (兼容英文 Critical/Important/Minor), 无发现为 "(无发现)"
 export function parseReviewFindings(text) {
   if (!text) return [];
   const out = [];
-  const re = /\[(Critical|Important|Minor)\]\s*([^\n]+)/g;
+  const re = /\[(严重|重要|次要|Critical|Important|Minor)\]\s*([^\n]+)/g;
   let m;
   while ((m = re.exec(String(text)))) {
     const finding = m[2].trim();
-    if (finding) out.push({ severity: m[1], finding });
+    if (finding) out.push({ severity: severityOf(m[1]), finding });
   }
   return out;
 }
@@ -48,17 +61,17 @@ export function buildReviewPrompt(workDesc, judge, perspective) {
 【产出】
 ${"<产出内容>"}
 
-输出发现清单, 每行一条, 格式 "[严重级] 描述", 严重级只能是:
-- [Critical] 功能错误 / 需求未满足 / 会导致失败
-- [Important] 质量缺陷 / 边界情况 / 明显风险
-- [Minor] 小改进 / 风格
+输出发现清单, 每行一条, 格式 "[严重级] 描述", 严重级用:
+- [严重] 功能错误 / 需求未满足 / 会导致失败
+- [重要] 质量缺陷 / 边界情况 / 明显风险
+- [次要] 小改进 / 风格
 没有任何问题时只输出一行 "(无发现)"。不要输出其他内容。`;
 }
 
 // 修复提示词: 把未决发现交给实施者修复
 export function buildFixPrompt(task, findings) {
   const open = findings.filter((f) => f.severity === "Critical" || f.severity === "Important");
-  const lines = open.map((f) => `[${f.severity}] ${f.finding}`).join("\n");
+  const lines = open.map((f) => `[${severityLabel(f.severity)}] ${f.finding}`).join("\n");
   return `上一轮产出存在以下 ${open.length} 项问题, 请逐一修复 (只解决这些问题, 不要引入新问题):\n${lines}\n\n原始任务: ${task}`;
 }
 
@@ -110,14 +123,17 @@ async function runReviewLoop({ agent, L, task, perspective, role, judge, fixRoun
   L.spawnAgent(revName, { ...mkOpts(revName), env: { PPX_AGENT_READONLY: "1" } });
   if (agent.lifecycle) agent.lifecycle.reproduce(2);
 
-  const max = Math.min(Math.max(Number(fixRounds) || 3, 0), 5); // 熔断上限 (Superpowers 5 轮, 默认 3 控成本)
+  const max = (() => { // v1.0.8: fix_rounds=0 应能设 0 (原 `|| 3` 把 0 变 3)
+    const parsed = Number(fixRounds);
+    return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), 5) : 3;
+  })(); // 熔断上限 (Superpowers 5 轮, 默认 3 控成本; 0 = 不修复直接停放)
   const ledger = [];
   let findings = [];
   let result = "";
 
   // 1. 实施
   try {
-    const r = await withTimeout(L.send(implName, { type: "chat", message: task, perspective }), DELEGATE_TIMEOUT_MS, "实施");
+    const r = await withTimeout(L.send(implName, { type: "chat", message: task, perspective }, { timeout: DELEGATE_TIMEOUT_MS + 5000 }), DELEGATE_TIMEOUT_MS, "实施");
     result = String(r?.reply || "").trim() || "(实施者无回复)";
   } catch (e) {
     return `[工具错误] spawn_agent(review): 实施失败: ${e.message}`;
@@ -129,7 +145,7 @@ async function runReviewLoop({ agent, L, task, perspective, role, judge, fixRoun
   while (true) {
     const reviewText = await (async () => {
       try {
-        const r = await withTimeout(L.send(revName, { type: "chat", message: buildReviewPrompt(task, judge, perspective) + `\n\n【产出】\n${result.slice(0, 6000)}`, perspective }), DELEGATE_TIMEOUT_MS, "审查");
+        const r = await withTimeout(L.send(revName, { type: "chat", message: buildReviewPrompt(task, judge, perspective) + `\n\n【产出】\n${result.slice(0, 6000)}`, perspective }, { timeout: DELEGATE_TIMEOUT_MS + 5000 }), DELEGATE_TIMEOUT_MS, "审查");
         return String(r?.reply || "");
       } catch (e) {
         return `[Critical] 审查者不可用: ${e.message}`;
@@ -141,7 +157,7 @@ async function runReviewLoop({ agent, L, task, perspective, role, judge, fixRoun
     if (round >= max) break;          // 熔断
     round++;
     try {
-      const r = await withTimeout(L.send(implName, { type: "chat", message: buildFixPrompt(task, findings), perspective }), DELEGATE_TIMEOUT_MS, `修复第${round}轮`);
+      const r = await withTimeout(L.send(implName, { type: "chat", message: buildFixPrompt(task, findings), perspective }, { timeout: DELEGATE_TIMEOUT_MS + 5000 }), DELEGATE_TIMEOUT_MS, `修复第${round}轮`);
       result = String(r?.reply || "").trim() || "(实施者无回复)";
     } catch (e) {
       ledger.push({ round, step: "fix", error: e.message });
@@ -154,11 +170,11 @@ async function runReviewLoop({ agent, L, task, perspective, role, judge, fixRoun
   const open = findings.filter((f) => f.severity === "Critical" || f.severity === "Important");
   if (open.length) {
     return `⚠️ 审查未通过: 达到修复上限 (${max} 轮), 以下 ${open.length} 项未决发现已停放, 请主 agent 裁定是否接受当前产出:\n`
-      + open.map((f) => `- [${f.severity}] ${f.finding}`).join("\n")
+      + open.map((f) => `- [${severityLabel(f.severity)}] ${f.finding}`).join("\n")
       + `\n\n当前产出:\n${result}`;
   }
   const summary = findings.length
-    ? findings.map((f) => `[${f.severity}]`).join(" ")
+    ? findings.map((f) => `[${severityLabel(f.severity)}]`).join(" ")
     : "无";
   return `✅ 审查通过 (审查发现: ${summary})\n\n${result}`;
 }
@@ -250,7 +266,7 @@ export function registerDelegateTools(catalog, _opts = {}) {
         const settled = await Promise.all(tasks.map(async (task, i) => {
           try {
             const reply = await withTimeout(
-              L.send(names[i], { type: "chat", message: task, perspective: perspectives[i] }),
+              L.send(names[i], { type: "chat", message: task, perspective: perspectives[i] }, { timeout: DELEGATE_TIMEOUT_MS + 5000 }),
               DELEGATE_TIMEOUT_MS,
               `子任务${i + 1}`
             );

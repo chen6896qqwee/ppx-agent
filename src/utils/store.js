@@ -12,12 +12,20 @@ export function atomicWrite(file, data) {
   ensureDir(path.dirname(file));
   const tmp = file + "." + crypto.randomBytes(4).toString("hex") + ".tmp";
   fs.writeFileSync(tmp, data, "utf8");
-  try {
-    fs.renameSync(tmp, file);
-  } catch (e) {
-    // 并发写同一文件时 rename 可能 EPERM (Windows): 降级为直接写, 保数据不丢
-    try { fs.unlinkSync(tmp); } catch {}
-    fs.writeFileSync(file, data, "utf8");
+  // v1.0.8: rename 覆盖已存在文件在 Windows 并发下可能 EPERM/EEXIST (短窗口), 重试 3 次;
+  // 不再降级为非原子直接写 (并发双写可交错损坏文件), 重试仍失败则抛错由调用方处理
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(tmp, file);
+      return;
+    } catch (e) {
+      if (attempt >= 2) {
+        try { fs.unlinkSync(tmp); } catch {}
+        throw new Error(`原子写失败: ${file} (${e.message})`);
+      }
+      const end = Date.now() + 30;
+      while (Date.now() < end) {} // 短延迟后重试
+    }
   }
 }
 

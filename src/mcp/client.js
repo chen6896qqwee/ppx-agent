@@ -3,12 +3,13 @@
 // 协议: JSON-RPC 2.0 (换行分隔 JSON / HTTP body)。协议版本 2024-11-05 (stdio) / 2025-03-26 (HTTP)。
 // 能力: initialize 握手 / tools/list / tools/call / resources/list / resources/read。
 // 可靠性: 请求超时 + 断连时拒绝所有 pending 请求 (不再永久挂起)。
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { warn } from "../utils/logger.js";
 
 const PROTOCOL_VERSION = "2024-11-05";      // stdio 本地服务器广泛兼容的版本
 const HTTP_PROTOCOL_VERSION = "2025-03-26"; // Streamable HTTP 传输对应的协议版本
 const DEFAULT_TIMEOUT = 60000;              // 单请求默认超时 (ms)
+const MAX_STDIO_BUF = 1024 * 1024;          // stdout 缓冲上限: 防恶意/异常服务器发超长行耗尽内存 (v1.0.8)
 
 // ---- SSE (Server-Sent Events) 解析 ----
 // Streamable HTTP 服务器可用 text/event-stream 响应。抽 event -> data 里的 JSON-RPC 消息。
@@ -73,6 +74,8 @@ class StdioTransport {
       proc.stdout.setEncoding("utf8");
       proc.stdout.on("data", (chunk) => this._onData(chunk));
       proc.stderr.on("data", (d) => warn(`[mcp] ${this.command} stderr: ${String(d).slice(0, 300)}`));
+      // v1.0.8: stdin error 监听 (子进程退出后 write 触发 EPIPE 会 unhandled 崩溃)
+      if (proc.stdin) proc.stdin.on("error", (e) => warn(`[mcp] ${this.command} stdin: ${e.message}`));
       proc.once("spawn", () => { this._spawned = true; resolve(); });
       proc.once("error", (e) => {
         if (!this._spawned) reject(new Error(`无法启动 MCP 服务器 ${this.command}: ${e.message}`));
@@ -88,16 +91,34 @@ class StdioTransport {
     if (!this.proc || !this.proc.stdin || this.proc.killed) {
       throw new Error("MCP 服务器未连接");
     }
-    this.proc.stdin.write(JSON.stringify(msg) + "\n");
+    try {
+      this.proc.stdin.write(JSON.stringify(msg) + "\n");
+    } catch (e) {
+      throw new Error(`MCP 写入失败: ${e.message}`);
+    }
   }
 
   close() {
-    if (this.proc) { try { this.proc.kill(); } catch {} }
+    if (this.proc) {
+      const pid = this.proc.pid;
+      // v1.0.8: 杀进程树 (npx/uvx 会派生子进程, 只 kill 直接子进程会泄漏)
+      if (process.platform === "win32") {
+        try { spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", timeout: 5000 }); } catch {}
+      } else {
+        try { process.kill(-pid, "SIGTERM"); } catch {} // 负 pid = 整个进程组
+      }
+      try { this.proc.kill(); } catch {}
+    }
     this.proc = null;
   }
 
   _onData(chunk) {
     this._buf += chunk;
+    // v1.0.8: 缓冲上限保护 (防内存耗尽)
+    if (this._buf.length > MAX_STDIO_BUF) {
+      warn(`[mcp] ${this.command} stdout 缓冲超限 (${MAX_STDIO_BUF}), 丢弃多余数据`);
+      this._buf = this._buf.slice(-4096);
+    }
     let idx;
     while ((idx = this._buf.indexOf("\n")) !== -1) {
       const line = this._buf.slice(0, idx).trim();

@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert";
 import { WechatWebhookChannel } from "../src/channels/wechat.js";
-import { decryptMsg, verifySignature, encryptMsg } from "../src/channels/wechat-crypto.js";
+import { decryptMsg, verifySignature, generateSignature, encryptMsg } from "../src/channels/wechat-crypto.js";
 
 const KEY = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
 const CORP = "wx1234567890";
@@ -25,12 +25,17 @@ function makeChannel(agent = stubAgent(), overrides = {}) {
   });
 }
 
+// 生成带合法签名的 query (v1.0.8: 配置 token 后必须验签)
+function authedQuery(body, ts = "1", nonce = "2") {
+  return { msg_signature: generateSignature("mytoken", ts, nonce, body), timestamp: ts, nonce };
+}
+
 test("微信通道: 加密 webhook 解密并返回加密回包", async () => {
   const ch = makeChannel();
   const plain = "<xml><ToUserName><![CDATA[from]]></ToUserName><FromUserName><![CDATA[to]]></FromUserName><Content><![CDATA[你好]]></Content></xml>";
   const enc = encryptMsg(KEY, plain, CORP);
   const body = `<xml><Encrypt><![CDATA[${enc}]]></Encrypt></xml>`;
-  const out = await ch.handleWebhook(body, { msg_signature: "", timestamp: "1", nonce: "2" });
+  const out = await ch.handleWebhook(body, authedQuery(enc));
 
   assert.ok(out.xml, "返回加密回包 XML");
   assert.match(out.xml, /<Encrypt><!\[CDATA\[/);
@@ -43,16 +48,30 @@ test("微信通道: 加密 webhook 解密并返回加密回包", async () => {
 test("微信通道: 明文 webhook 返回明文回复 XML", async () => {
   const ch = makeChannel();
   const body = "<xml><ToUserName><![CDATA[from]]></ToUserName><FromUserName><![CDATA[to]]></FromUserName><Content><![CDATA[hi]]></Content></xml>";
-  const out = await ch.handleWebhook(body, {});
+  const out = await ch.handleWebhook(body, authedQuery(body));
   assert.ok(out.xml, "返回明文回复 XML");
   assert.match(out.xml, /回复:hi/);
   assert.doesNotMatch(out.xml, /<Encrypt>/);
 });
 
+test("微信通道: 配置 token 后无签名/错误签名拒绝 (防伪造消息)", async () => {
+  const ch = makeChannel();
+  const body = "<xml><ToUserName><![CDATA[from]]></ToUserName><FromUserName><![CDATA[to]]></FromUserName><Content><![CDATA[hi]]></Content></xml>";
+  // 无签名
+  const noSig = await ch.handleWebhook(body, {});
+  assert.match(noSig.error || "", /msg_signature/, "缺签名拒绝");
+  // 错误签名
+  const badSig = await ch.handleWebhook(body, { msg_signature: "deadbeef", timestamp: "1", nonce: "2" });
+  assert.match(badSig.error || "", /签名校验失败/, "错签名拒绝");
+  // 正确签名放行
+  const ok = await ch.handleWebhook(body, authedQuery(body));
+  assert.ok(ok.xml, "正确签名放行");
+});
+
 test("微信通道: 未配置 encodingAESKey 时加密消息报错", async () => {
   const ch = makeChannel(stubAgent(), { encodingAESKey: "" });
   const enc = encryptMsg(KEY, "<xml><Content><![CDATA[x]]></Content></xml>", CORP);
-  const out = await ch.handleWebhook(`<xml><Encrypt><![CDATA[${enc}]]></Encrypt></xml>`, {});
+  const out = await ch.handleWebhook(`<xml><Encrypt><![CDATA[${enc}]]></Encrypt></xml>`, authedQuery(enc));
   assert.match(out.error, /encodingAESKey/);
 });
 

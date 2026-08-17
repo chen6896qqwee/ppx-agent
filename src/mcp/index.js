@@ -8,6 +8,17 @@ import { McpClient, extractToolResult, extractResourceText } from "./client.js";
 import { TOOL_ERROR_PREFIX } from "../tools/catalog.js";
 import { warn, info } from "../utils/logger.js";
 
+// v1.0.8: MCP 工具名清洗 (只留 \w.-, 截断) — 防恶意服务器注册非法工具名/注入
+export function sanitizeMcpName(name) {
+  return String(name || "").replace(/[^\w.-]/g, "_").slice(0, 64);
+}
+
+// v1.0.8: MCP 工具描述清洗 (单行化 + 截断) — 服务器描述直接进 LLM prompt, 防换行/长文本注入指令
+export function sanitizeMcpDescription(desc, name) {
+  const s = String(desc || "").replace(/\s+/g, " ").trim();
+  return s.slice(0, 200) || `MCP 工具: ${name}`;
+}
+
 // 连接所有 MCP 服务器, 列出工具并注册到 catalog。
 // 除 tools 外, 服务器声明 resources/prompts 能力时, 额外注册对应读写工具 (P2⑥)。
 // 返回 { count, clients, close } — close() 关闭全部连接 (调用方负责生命周期)
@@ -23,10 +34,10 @@ export async function registerMcpTools(catalog, servers = []) {
       const tools = await client.listTools();
       for (const t of tools) {
         if (!t || !t.name) continue;
-        const name = (s.prefix || "") + t.name;
+        const name = (s.prefix || "") + sanitizeMcpName(t.name);
         catalog.register({
           name,
-          description: t.description || `MCP 工具: ${t.name}`,
+          description: sanitizeMcpDescription(t.description, t.name),
           parameters: t.inputSchema || { type: "object", properties: {} },
           category: "mcp",
           // isError 时加错误前缀, 让皮皮虾的自愈重试语义对 MCP 工具同样生效

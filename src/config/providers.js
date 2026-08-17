@@ -7,6 +7,7 @@
 //   - 热重载: 调用方写盘后, 调 agent.reloadProviders() 重建内存中的 LLM 客户端列表
 import fs from "node:fs";
 import path from "node:path";
+import { withFileLock } from "../utils/store.js";
 import { info, warn, error } from "../utils/logger.js";
 
 // 提供方字段白名单 (写入磁盘时的过滤)
@@ -112,67 +113,76 @@ export function getProvider(root, id) {
 }
 
 // 新增
+// v1.0.8: 写盘在文件锁内读-改-写 (防并发 API 请求丢更新)
 export function addProvider(root, raw) {
-  const { providers, raw: cfg } = readConfig(root);
-  const err = validateProvider(raw);
-  if (err) throw new Error(err);
-  if (providers.find((p) => p.id === raw.id)) throw new Error(`id 冲突: ${raw.id}`);
-  // 仅保留白名单字段
-  const norm = {};
-  for (const k of PROVIDER_KEYS) if (raw[k] !== undefined) norm[k] = raw[k];
-  if (!norm.id) norm.id = raw.id;
-  providers.push(norm);
-  cfg.providers = providers;
-  writeConfigAtomic(root, cfg);
-  return sanitizeProvider(norm);
+  return withFileLock(getProvidersPath(root), () => {
+    const { providers, raw: cfg } = readConfig(root);
+    const err = validateProvider(raw);
+    if (err) throw new Error(err);
+    if (providers.find((p) => p.id === raw.id)) throw new Error(`id 冲突: ${raw.id}`);
+    // 仅保留白名单字段
+    const norm = {};
+    for (const k of PROVIDER_KEYS) if (raw[k] !== undefined) norm[k] = raw[k];
+    if (!norm.id) norm.id = raw.id;
+    providers.push(norm);
+    cfg.providers = providers;
+    writeConfigAtomic(root, cfg);
+    return sanitizeProvider(norm);
+  });
 }
 
 // 更新 (id 不可改, 其他字段覆盖)
 export function updateProvider(root, id, patch) {
-  const { providers, raw: cfg } = readConfig(root);
-  const idx = providers.findIndex((p) => p.id === id);
-  if (idx < 0) throw new Error(`提供方不存在: ${id}`);
-  const merged = { ...providers[idx], ...patch, id };
-  // 抹掉 patch 里的 api_key 设了空字符串, 视为清空
-  if (patch.api_key === "") delete merged.api_key;
-  const err = validateProvider(merged);
-  if (err) throw new Error(err);
-  // 仅保留白名单
-  const clean = {};
-  for (const k of PROVIDER_KEYS) if (merged[k] !== undefined) clean[k] = merged[k];
-  providers[idx] = clean;
-  cfg.providers = providers;
-  writeConfigAtomic(root, cfg);
-  return sanitizeProvider(clean);
+  return withFileLock(getProvidersPath(root), () => {
+    const { providers, raw: cfg } = readConfig(root);
+    const idx = providers.findIndex((p) => p.id === id);
+    if (idx < 0) throw new Error(`提供方不存在: ${id}`);
+    const merged = { ...providers[idx], ...patch, id };
+    // 抹掉 patch 里的 api_key 设了空字符串, 视为清空
+    if (patch.api_key === "") delete merged.api_key;
+    const err = validateProvider(merged);
+    if (err) throw new Error(err);
+    // 仅保留白名单
+    const clean = {};
+    for (const k of PROVIDER_KEYS) if (merged[k] !== undefined) clean[k] = merged[k];
+    providers[idx] = clean;
+    cfg.providers = providers;
+    writeConfigAtomic(root, cfg);
+    return sanitizeProvider(clean);
+  });
 }
 
 // 删除
 export function removeProvider(root, id) {
-  const { providers, raw: cfg } = readConfig(root);
-  const idx = providers.findIndex((p) => p.id === id);
-  if (idx < 0) throw new Error(`提供方不存在: ${id}`);
-  const [removed] = providers.splice(idx, 1);
-  cfg.providers = providers;
-  writeConfigAtomic(root, cfg);
-  return sanitizeProvider(removed);
+  return withFileLock(getProvidersPath(root), () => {
+    const { providers, raw: cfg } = readConfig(root);
+    const idx = providers.findIndex((p) => p.id === id);
+    if (idx < 0) throw new Error(`提供方不存在: ${id}`);
+    const [removed] = providers.splice(idx, 1);
+    cfg.providers = providers;
+    writeConfigAtomic(root, cfg);
+    return sanitizeProvider(removed);
+  });
 }
 
 // 重排 (默认 = 数组第 0 个)
 export function reorderProviders(root, order) {
-  const { providers, raw: cfg } = readConfig(root);
-  if (!Array.isArray(order) || order.length !== providers.length) {
-    throw new Error("order 必须是包含全部 id 的数组");
-  }
-  const byId = new Map(providers.map((p) => [p.id, p]));
-  const next = [];
-  for (const id of order) {
-    const p = byId.get(id);
-    if (!p) throw new Error(`未知 id: ${id}`);
-    next.push(p);
-    byId.delete(id);
-  }
-  if (byId.size) throw new Error("order 缺少部分 id");
-  cfg.providers = next;
-  writeConfigAtomic(root, cfg);
-  return next.map((p) => sanitizeProvider(p));
+  return withFileLock(getProvidersPath(root), () => {
+    const { providers, raw: cfg } = readConfig(root);
+    if (!Array.isArray(order) || order.length !== providers.length) {
+      throw new Error("order 必须是包含全部 id 的数组");
+    }
+    const byId = new Map(providers.map((p) => [p.id, p]));
+    const next = [];
+    for (const id of order) {
+      const p = byId.get(id);
+      if (!p) throw new Error(`未知 id: ${id}`);
+      next.push(p);
+      byId.delete(id);
+    }
+    if (byId.size) throw new Error("order 缺少部分 id");
+    cfg.providers = next;
+    writeConfigAtomic(root, cfg);
+    return next.map((p) => sanitizeProvider(p));
+  });
 }

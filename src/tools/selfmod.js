@@ -101,6 +101,9 @@ export function registerSelfmodTools(catalog, { skillsDir }) {
       const desc = String(args.description || "").trim();
       const content = String(args.content || "").trim();
       if (!desc || !content) return "[工具错误] create_skill: 需 description + content";
+      // v1.0.8: 长度上限, 防写超大文件/垃圾内容
+      if (desc.length > 300) return "[工具错误] create_skill: description 超长 (最大 300 字符)";
+      if (content.length > 50000) return "[工具错误] create_skill: content 超长 (最大 50000 字符)";
       const dir = path.join(skillsDir, name);
       fs.mkdirSync(dir, { recursive: true });
       const frontmatter = "---" + "\n" + "name: " + name + "\n" + "description: " + desc + "\n" + "---" + "\n" + "\n";

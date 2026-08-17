@@ -1,6 +1,6 @@
 // src/mode/index.js - Agent 模式注册表 (编排策略可插拔)
 // 把「怎么编排」从 chat() 里抽出来, 每种模式是一个 executor(agent, userMsg, opts) -> reply。
-// 内置: react(工具循环) / single(纯对话); 未来: plan-exec / multi-agent / router / blackboard / graph。
+// 内置: react(工具循环) / single(纯对话) / plan-exec / router / blackboard / graph / legion。
 // 默认 react; 用 config.agent.mode 或 chat({ mode }) 切换。
 
 export class ModeRegistry {

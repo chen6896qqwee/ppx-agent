@@ -1,5 +1,46 @@
 ﻿# CHANGELOG
 
+## v1.0.8 (2026-08-17) — 第八轮评价整改: 通道认证 + 军团健壮性 + 配置安全 + 全链路加固
+
+依据 EVALUATION-2026-08-17 (第八轮) 全部整改落地 (第七轮整改经实测验证有效: SSE 聊天/生命周期持久化/主动提醒去重):
+
+### P1 通道安全 (默认 disabled, 启用即暴露 → 已修)
+- **飞书 webhook 认证**: `feishu.js` 校验 `X-Lark-Request-Token` 头 (原只查 body token 且仅当存在才校验, 等于无认证), 缺/错 header 403
+- **微信验签强制**: `wechat.js` 配置 token 后所有模式 (明文/加密/echostr) 都必须验签; **GET echostr URL 验证可达** (原 mount 只路由 POST)
+- **webhook 挂载重构**: HttpChannel 新增 `registerWebhook(path, handler)` 路由注册 (单一 request handler 分发), feishu/wechat mount 不再 `removeAllListeners` 吞主 handler, 消除多通道互踩与双响应竞态 (ERR_HTTP_HEADERS_SENT)
+
+### P1 军团通信 (worker 异常不再永久挂起)
+- `agent-worker.js` error 行带 `req.id` (原无 id → 主进程 pending 永不 settle)
+- `Legion.send()` 加超时兜底 (默认 30s, 可覆盖), pending 超时清理; `broadcast` 使用 timeout 参数 (原声明未用); spawn 监听 `error`; stdin.write 错误处理
+- `shutdownAll()` 兜底 kill 未退出进程 (worker 无响应不残留); `agent.shutdown()` 清理 `_legion` 子进程
+- worker 串行队列 (防并发 data 事件覆盖 currentReqId/_perspective)
+
+### P1 MCP 加固
+- 工具描述清洗: 单行化 + 截断 200 (服务器描述直接进 LLM prompt, 防换行/长文本注入指令); 工具名白名单 `[\w.-]` + 截断 64
+- stdio 子进程: 关闭时杀进程树 (Windows taskkill /T, POSIX 负 pid), stdin error 监听 (防 EPIPE 崩溃), stdout 缓冲上限 1MB
+
+### P2 配置与数据安全
+- `settings.updateSettings`: patch 顶层/分区字段按 SETTINGS_FIELDS 白名单过滤 (原任意字段可写入磁盘); 写盘在文件锁内读-改-写
+- `providers.js`/`channels.js` 写操作加 `withFileLock` (原 read-modify-write 并发丢更新)
+- `channels.js` boolean 识别字符串 `"false"` (原 `!!"false"` → true)
+- `store.js` `atomicWrite`: rename 失败重试 3 次 (原降级非原子直接写, 并发可损坏文件)
+- `trace.js`: args/result 落盘前 PII 脱敏 (凭证不写日志); `read(day)` 支持指定日期 (原忽略参数恒读今天)
+- `pii.js`: 补邮箱/手机号规则, inline_secret 值域放宽 (含 `:#`) + 8 位起
+
+### P2/P3 边界与健壮性
+- readonly 模式禁 `refine` (会写经验库, 审查者也不应触发)
+- DAG: 校验重复 id / 依赖不存在 (原静默丢弃); mode/legion workflow 节点结构校验
+- `create_skill` 内容长度上限 (description 300 / content 50000)
+- `delegate.js`: fix_rounds=0 可设 0 (原 `||3` 变 3); 审查严重级 token 中文化 (严重/重要/次要, 解析兼容中英); send 传超时对齐 withTimeout
+- blackboard 空专家数组回退默认; healer 英文日志中文化; notify 消息中文化
+- ARCHITECTURE.md 修正 (dispatch 无生产消费方说明 + 军团协议细节)
+
+### 验证
+- 全量测试 422 项 418 过 0 失败 4 跳过 (网络型), 3.5s (新增 test/hardening.test.js 9 项 + 微信验签/通道测试更新)
+- web tsc 0 错误; 端到端冒烟: health / SSE 聊天 / sessions / 静态页 / 未挂 webhook 路径 404 全部正常
+- 生产数据卫生保持: facts 1 条真实待办, 经验 1 条
+
+
 ## v1.0.7 (2026-08-17) — 第七轮评价整改: Web 聊天链路修复 + ANS 状态化 + 性能健壮性
 
 依据 EVALUATION-2026-08-17 (第七轮) 全部整改落地:

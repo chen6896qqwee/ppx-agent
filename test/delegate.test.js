@@ -182,7 +182,7 @@ test("buildReviewPrompt 含任务/准则/只读约束", () => {
   assert.ok(p.includes("只读审查"), "含只读约束");
   assert.ok(p.includes("实现一个排序函数"), "含任务");
   assert.ok(p.includes("检查正确性与边界"), "含审查准则");
-  assert.ok(p.includes("[Critical]"), "含严重级说明");
+  assert.ok(p.includes("[严重]"), "含严重级说明 (中文 token)");
 });
 
 test("buildFixPrompt 只带 Critical/Important 发现", () => {
@@ -191,9 +191,10 @@ test("buildFixPrompt 只带 Critical/Important 发现", () => {
     { severity: "Minor", finding: "B" },
     { severity: "Important", finding: "C" },
   ]);
-  assert.ok(p.includes("[Critical] A"), "含 Critical");
-  assert.ok(p.includes("[Important] C"), "含 Important");
+  assert.ok(p.includes("[严重] A"), "含严重 (Critical 映射中文)");
+  assert.ok(p.includes("[重要] C"), "含重要 (Important 映射中文)");
   assert.ok(!p.includes("Minor"), "不带 Minor");
+  assert.ok(!p.includes("次要"), "不带次要");
   assert.ok(p.includes("原始任务"), "含原始任务");
 });
 
@@ -255,7 +256,7 @@ test("spawn_agent review: 达修复上限熔断停放未决发现", async () => 
   const res = await agent.tools.call("spawn_agent", { task: "写函数", review: true, fix_rounds: 2 }, { agent });
   assert.ok(res.includes("⚠️ 审查未通过"), "熔断标记");
   assert.ok(res.includes("2 轮"), "标注修复上限轮数");
-  assert.ok(res.includes("[Important] 一直存在的问题"), "未决发现列出交主 agent 裁定");
+  assert.ok(res.includes("[重要] 一直存在的问题"), "未决发现列出交主 agent 裁定 (中文严重级标签)");
   assert.equal(implCall, 3, "初版 + 2 轮修复");
   agent.shutdown();
   fs.rmSync(agent.dataDir, { recursive: true, force: true });

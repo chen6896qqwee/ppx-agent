@@ -3,12 +3,21 @@
 // graph.nodes = [{ id, task, dependsOn?: [id], agent?: name }]
 
 // 拓扑分层 (Kahn 算法): 返回 [ [同层可并行的节点id], ... ], 检测环
+// v1.0.8: 校验重复 id / 依赖不存在 (原实现静默丢弃不存在的依赖, 重复 id 误报成环)
 export function topoLevels(nodes) {
-  const ids = new Set(nodes.map((n) => n.id));
+  const ids = new Set();
+  for (const n of nodes) {
+    if (!n || !n.id) throw new Error("DAG 节点缺 id");
+    if (ids.has(n.id)) throw new Error(`DAG 节点 id 重复: ${n.id}`);
+    ids.add(n.id);
+  }
   const indeg = new Map();
   const children = new Map();
   for (const n of nodes) {
-    const deps = (n.dependsOn || []).filter((d) => ids.has(d));
+    const deps = n.dependsOn || [];
+    for (const d of deps) {
+      if (!ids.has(d)) throw new Error(`DAG 节点 ${n.id} 依赖不存在的节点: ${d}`);
+    }
     indeg.set(n.id, deps.length);
     for (const d of deps) {
       if (!children.has(d)) children.set(d, []);

@@ -48,38 +48,60 @@ export class WechatWebhookChannel extends Channel {
     }
   }
 
-  // 把 /wechat/webhook 挂到 HTTP server (webhook 型通道, 支持明文/加密回包)
-  mount(server) {
-    const orig = server.listeners("request")[0];
-    server.removeAllListeners("request");
-    server.on("request", async (req, res) => {
-      if (req.url === this.path && req.method === "POST") {
-        let body = "";
+  // 把 /wechat/webhook 挂到 HTTP server (webhook 型通道, 支持明文/加密回包 + GET echostr URL 验证)
+  // v1.0.8: 注册到 HttpChannel 的 webhook 路由 (单一 request handler 分发); 支持 GET echostr
+  mount(server, httpChannel = null) {
+    const register = httpChannel && typeof httpChannel.registerWebhook === "function"
+      ? (path, fn) => httpChannel.registerWebhook(path, fn)
+      : (path, fn) => { server && server.on?.("request", fn); };
+    register(this.path, async (req, res) => {
+      const u = new URL(req.url || "/", "http://localhost");
+      let body = "";
+      if (req.method === "POST") {
         for await (const c of req) body += c;
-        try {
-          const out = await this.handleWebhook(body);
-          if (out.xml) { res.writeHead(200, { "Content-Type": "text/xml" }); res.end(out.xml); }
-          else { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(out)); }
-        } catch (e) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: e.message }));
-        }
-        return;
       }
-      orig(req, res);
+      const query = {
+        msg_signature: u.searchParams.get("msg_signature") || "",
+        timestamp: u.searchParams.get("timestamp") || "",
+        nonce: u.searchParams.get("nonce") || "",
+        echostr: u.searchParams.get("echostr") || "",
+      };
+      try {
+        const out = await this.handleWebhook(body, query);
+        if (out.xml) { res.writeHead(200, { "Content-Type": "text/xml" }); res.end(out.xml); }
+        else if (typeof out === "string") { res.writeHead(200, { "Content-Type": "text/plain" }); res.end(out); } // echostr 明文回显 (企业微信 URL 验证要求)
+        else { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(out)); }
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+      }
     });
   }
 
   // 企业微信回调: URL query 带 msg_signature/timestamp/nonce; body 为 XML
   // 加密模式: 外层 XML 含 <Encrypt>, 解密得内层明文消息
+  // v1.0.8 安全加固: 配置了 token 时所有模式都必须验签 (明文/加密/echostr), 防伪造消息驱动 agent
   async handleWebhook(body, query = {}) {
     const raw = typeof body === "string" ? body : JSON.stringify(body);
+    const { msg_signature, timestamp, nonce } = query;
+
+    // URL 验证 (GET echostr, 明文模式验签后直接回显)
+    if (query.echostr) {
+      if (this.token) {
+        if (!msg_signature) return { error: "缺少 msg_signature" };
+        const ok = verifySignature(this.token, timestamp || "", nonce || "", query.echostr, msg_signature);
+        if (!ok) return { error: "签名校验失败" };
+      }
+      return query.echostr;
+    }
 
     // 加密消息: 验签 + 解密 + 加密回包
     if (/<Encrypt>/.test(raw)) {
       const enc = (raw.match(/<Encrypt><!\[CDATA\[([\s\S]*?)\]\]><\/Encrypt>/) || [])[1] || "";
-      if (this.token && query.msg_signature && enc) {
-        const ok = verifySignature(this.token, query.timestamp || "", query.nonce || "", enc, query.msg_signature);
+      // 配置了 token 就必须验签 (防无 token 时跳过)
+      if (this.token) {
+        if (!msg_signature) return { error: "缺少 msg_signature" };
+        const ok = verifySignature(this.token, timestamp || "", nonce || "", enc, msg_signature);
         if (!ok) return { error: "签名校验失败" };
       }
       if (!this.encodingAESKey) return { error: "未配置 encodingAESKey, 无法解密" };
@@ -92,19 +114,22 @@ export class WechatWebhookChannel extends Channel {
           token: this.token,
           replyXml: reply.xml,
           receiveId,
-          timestamp: query.timestamp || null,
-          nonce: query.nonce || null,
+          timestamp: timestamp || null,
+          nonce: nonce || null,
         }) };
       }
       return reply;
     }
 
-    // 明文 XML 模式
-    if (/<Content>/.test(raw)) return this._replyFromXml(raw);
-
-    // URL 验证 (GET echostr, 明文模式直接回显; 加密模式需 encryptMsg, 见官方文档)
-    const echostr = (raw.match(/<echostr>([\s\S]*?)<\/echostr>/) || [])[1];
-    if (echostr) return echostr;
+    // 明文 XML 模式: 配置了 token 就必须验签 (防伪造消息)
+    if (/<Content>/.test(raw)) {
+      if (this.token) {
+        if (!msg_signature) return { error: "缺少 msg_signature" };
+        const ok = verifySignature(this.token, timestamp || "", nonce || "", raw, msg_signature);
+        if (!ok) return { error: "签名校验失败" };
+      }
+      return this._replyFromXml(raw);
+    }
 
     return { error: "未识别的微信消息" };
   }
