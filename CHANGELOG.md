@@ -1,5 +1,35 @@
 ﻿# CHANGELOG
 
+## v1.0.0 (2026-08-17) — 独立自包含 + 可发布
+
+皮皮虾从「依赖 OpenClaw/dsh 外部引擎的壳」进化为「独立自包含、零外部引擎依赖」的 agent，并补齐分发链路。这是首个正式版。
+
+### 引擎整合：吸收 OpenClaw/dsh 精华（四阶段）
+- **重试内核** `src/llm/retry.js`：瞬态分类重试（429/5xx/timeout + Retry-After + 可取消指数退避），`_request` 抛结构化 status
+- **会话压缩层** `src/memory/compaction.js`：超阈值时 LLM 压缩成结构化摘要（目标/进展/关键决策/待办/关键上下文），投影层替换被压缩区间（日志不可变）
+- **能力 seam** `src/seam/shell.js`：命令执行抽象为可替换 provider，run_command 解耦硬编码 execFile；工具层加 before/after 钩子链
+- **纯文本工具调用修复**：http 后端返回文本工具意图时自动恢复为原生 tool_calls
+- **turn/step 分层**：`setStepEvent` + 推理轮次事件，军团 worker 上报进度（legion `send` 支持 onProgress 中间事件）
+- **移除引擎默认依赖**：config 默认纯 http 直连，openclaw/dsh 移入 `_optional_engines` 注释配置（后端代码保留为可选接缝）
+
+### 分发准备
+- **npm 发布字段**：bin（`ppx`/`ppx-serve`）、repository、author、exports
+- **去本机硬编码**：`C:/Users/chen/...` 路径清零，改环境变量 `PPX_OPENCLAW_MJS`/`PPX_DSH_ROOT`
+- **Node 版本放宽**：`>=22.22.3(排除23/24.0-24.14)` → `>=20`（openclaw 后端运行时检测降级）
+- **数据目录外置**：`PPX_DATA_DIR` 环境变量 + node_modules 包自动外置 `~/.ppx`
+
+### 体验改进
+- **Web UI**：send() 从非流式改为 SSE 流式 + step 推理轮次 + 工具调用状态；修复 settings 页历史 TS 类型错误
+- **文档**：新增 `docs/QUICKSTART.md`、`docs/CONFIG.md`、`docs/ARCHITECTURE.md`
+- **打包流程**：`npm run release` 一键打包（build 前端 + pack 内核到 dist/）+ Dockerfile（一条 docker run 起内核+Web UI）
+- **benchmark** 去硬编码，从 config 读 provider
+- **注释统一**：英文残留清零
+
+### 验证
+- 全量测试 292 项 289 过 0 失败 3 跳过（网络型）
+- 前端 `tsc --noEmit` 0 错误 + `next build` 生产构建成功
+- `npm run release` 完整跑通（68 文件 110.5KB tgz）
+
 ## v0.10.3 (2026-08-16) — 模型配置 Web UI (DSH 风格首启向导)
 
 补上"首启即可视化配置 LLM 提供方", 用户不再需要手改 `config/ppx.json`。
