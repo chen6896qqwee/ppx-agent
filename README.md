@@ -51,6 +51,20 @@
 
 ## 🚀 快速开始
 
+### 全局安装 (npm)
+
+直接从 npm 安装，即可使用命令行工具：
+
+```bash
+npm i -g ppx-agent
+
+ppx           # 启动对话 CLI
+ppx-serve     # 启动 HTTP 服务
+ppx-channels  # 通道 CLI
+```
+
+### 本地开发
+
 ```bash
 # 1. 配置模型 (config/ppx.json)
 #    设置环境变量: OPENAI_API_KEY / DEEPSEEK_API_KEY / VOLCENGINE_API_KEY ...
