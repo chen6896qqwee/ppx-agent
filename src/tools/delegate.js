@@ -108,7 +108,7 @@ async function runReviewLoop({ agent, L, task, perspective, role, judge, fixRoun
   L.spawnAgent(implName, mkOpts(implName));
   // 审查者只读: PPX_AGENT_READONLY=1 时 worker 禁用全部修改/执行工具
   L.spawnAgent(revName, { ...mkOpts(revName), env: { PPX_AGENT_READONLY: "1" } });
-  if (agent.lifecycle) agent.lifecycle.reproduced += 2;
+  if (agent.lifecycle) agent.lifecycle.reproduce(2);
 
   const max = Math.min(Math.max(Number(fixRounds) || 3, 0), 5); // 熔断上限 (Superpowers 5 轮, 默认 3 控成本)
   const ledger = [];
@@ -244,7 +244,7 @@ export function registerDelegateTools(catalog, _opts = {}) {
           });
         }
         // 生命周期: 繁衍计数 (ANS: reproducing)
-        if (agent.lifecycle) agent.lifecycle.reproduced += names.length;
+        if (agent.lifecycle) agent.lifecycle.reproduce(names.length);
 
         // 并行派发, 全部等结果 (各自独立超时)
         const settled = await Promise.all(tasks.map(async (task, i) => {

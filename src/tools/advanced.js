@@ -257,7 +257,7 @@ export function registerAdvancedTools(catalog, { dataDir, scheduler, onMemoryNot
   catalog.register({
     name: "notify",
     description: "主动向用户通道发送通知消息 (用于长任务或异步完成提醒)。",
-    parameters: { type: "object", properties: { message: { type: "string", description: "notification text" } }, required: ["message"] },
+    parameters: { type: "object", properties: { message: { type: "string", description: "要发送的通知内容" } }, required: ["message"] },
     execute: async (args, ctx) => {
       const agent = ctx && ctx.agent;
       if (agent && agent.notify) { agent.notify(args && args.message); return "notified"; }

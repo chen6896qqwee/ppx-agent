@@ -1,5 +1,36 @@
 ﻿# CHANGELOG
 
+## v1.0.7 (2026-08-17) — 第七轮评价整改: Web 聊天链路修复 + ANS 状态化 + 性能健壮性
+
+依据 EVALUATION-2026-08-17 (第七轮) 全部整改落地:
+
+### P0 Web UI 聊天链路修复 (实测 404 → SSE 正常)
+- **`web/next.config.ts` 补 `/message/stream` 代理** (原漏配, 浏览器聊天 404); 顺带补 `/sessions` + `/sessions/:path*` 代理
+- **`web/src/app/page.tsx` 重写**: send() 统一带 Bearer token (从 localStorage, 与 api.ts 一致); 会话管理 tab (列表/新建/切换/重命名/删除 + 恢复历史); 工具调用卡片 (调用中→✓完成/✗失败, 含耗时); 场景新建改 modal 表单 (替代 prompt); 首启引导/多会话/统计保留
+- **后端 `GET /sessions/:key/history`** 新增: 切换会话时恢复消息显示
+
+### P1 ANS 状态化 (从"壳"到"有状态")
+- **Lifecycle 持久化**: `src/ans/lifecycle.js` 状态落盘 `data/memory/lifecycle.json`, 跨进程/重启不归零; 新增 `evolve()/reproduce()` 方法 (内部落盘), agent/delegate 全部改用 (不再直接改字段)
+- **proactive 去重 + 完成跟踪**: 提醒状态存 `data/memory/proactive.json`; 同待办 24h 窗口内不重复提醒; `markTaskDone(id)` 标记完成后永不再提醒; CLI `/proactive-done <id>` + HTTP `POST /api/proactive/done`; 过期待办 (昨天/已过日期) 自动跳过
+- **记忆噪声治理**: `addMemory` 寒暄词开头短句拦截 (修 "你好皮皮虾" hits=123 逃逸精确匹配) + 长度上限 200; 提炼器 prompt 显式跳过寒暄/元讨论; 生产 facts 19→1 条 (删 3 噪声 + 15 条"三件套"元记忆变体), 经验库 2→1 条
+
+### P1/P2 性能与健壮性
+- **辅助 LLM 调用快速失败**: `llm.chat/apiChat` 支持 `timeoutMs`/`retryMax` 覆盖; 压缩/提炼/查询扩展/经验提炼/主动提醒 统一 10s 短超时 + 禁重试 + 前置 health 探测 (模型不可用毫秒级跳过)。修复模型不可用时主对话 30-40s 卡死
+- **压缩节流**: `_compactIfNeeded` 压缩后 60s 内不重复 (修复每轮对话重复付 8s LLM 压缩成本, 实测 10s→0.39s)
+- **工具执行统一**: `_llmWithTools` 内嵌工具执行改走 `_runTool` (trace/事件只此一份), 移除死参数 `llmInstance`
+- **经验同义合并**: `Experience.learn` 增加 bigram overlap 同义变体合并 (阈值 0.5, 真实变体校准), 排除"仅编号不同"模板句
+- **CORS 可配白名单**: `channels.http.cors_origin` 数组, 配置后仅放行白名单浏览器来源 (403 拒绝), 无 Origin 非浏览器请求放行; 未配置默认 `*` 兼容
+
+### P2 语言与卫生
+- 语言残留清零: notify 参数描述中文化 / `[interrupted]` 改中文 / catalog 日志中文化
+- 生产数据清理: facts 19→1, 经验库 2→1 (同义合并 uses 累加)
+
+### 验证
+- 全量测试 412 项 408 过 0 失败 4 跳过 (网络型), 3.7s (新增 10 项: 生命周期持久化 2 / 主动提醒去重 2 / addMemory 过滤 / 经验同义合并 2 / CORS 2 / 过期待办)
+- web tsc 0 错误; 端到端实测: Web 代理 /message/stream SSE 正常 (原 404), 会话历史/列表可用, /message 首次 10s (压缩) 后续 0.39s
+- eval 本地能力 7/7; 生产 facts 只留真实待办 "记得明天提交周报"
+
+
 ## v1.0.6 (2026-08-17) — MCP 配置 UI + 工具启停 + 首启引导
 
 依据 EVALUATION-2026-08-17 (第六轮) 四项整改全部落地:

@@ -15,7 +15,7 @@ import { buildCompactionMessages, transcriptToText } from "../memory/compaction.
 // ANS 独立模块 (可更换): 价值对齐 / 自主任务生成 / 生命周期
 import { Lifecycle } from "../ans/lifecycle.js";
 import { valuesPrompt } from "../ans/values.js";
-import { suggestProactive } from "../ans/proactive.js";
+import { suggestProactive, markTaskDone } from "../ans/proactive.js";
 import { SkillLoader } from "../skills/loader.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -23,6 +23,9 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const DEFAULT_TOOL_RESULT_BUDGET = 4000; // L4 toolResultBudget: 工具结果超过此长度裁剪, 防撑爆上下文
 const DEFAULT_MAX_TOOL_ERROR_RETRY = 2;
+// 辅助 LLM 调用短超时 (压缩/提炼/查询扩展/经验技能提炼等非主对话调用):
+// 模型不可用/网络不通时快速失败降级, 避免阻塞主对话 (主对话仍走 provider 默认长超时)
+const AUX_LLM_TIMEOUT_MS = 10000;
 // 会话历史条数/token 预算已迁到 config.memory (max_history_items / history_token_budget)
 
 // LLM 调用失败的兜底提示: 附排查指引, 避免裸抛错误对用户不友好
@@ -127,7 +130,8 @@ export class PPXAgent {
     this._personaBuilt = null; // L3 画像上次生成日期 (跨天刷新)
     this._proactiveTimer = null; // 主动任务生成定时器
     // 生命周期 (ANS 独立模块): born → growing → mature → evolving / reproducing
-    this.lifecycle = new Lifecycle();
+    // v1.0.7 持久化: 状态落盘 data/memory/lifecycle.json, 跨进程/重启不归零 (P1)
+    this.lifecycle = new Lifecycle({ file: path.join(this.dataDir, "memory", "lifecycle.json") });
     // 方法技能目录 (Superpowers 吸收): 供 _context 注入技能清单, LLM 按需 load_skill
     try { this.skills = new SkillLoader(path.join(root, "skills")); } catch { this.skills = null; }
 
@@ -186,7 +190,9 @@ export class PPXAgent {
   // 返回 string[] (纯内容数组); existing 为空时行为与旧版完全一致 (向后兼容)
   async _extractMemory(user, assistant, existing = []) {
     if (!this.llm) return [];
-    const sys = "你是记忆提炼器。从对话中提取值得长期记忆的关键事实、用户偏好、待办事项。只输出 JSON 数组, 每项是{content: 一句完整中文记忆}。没有值得记的返回 []。不要解释, 只输出 JSON。";
+    if (!(await this._auxLlmReady())) return []; // 模型不可用时跳过提炼 (退回启发式)
+    // v1.0.7 噪声治理: 显式跳过寒暄/无信息量/关于系统本身的元讨论 (如"任务描述要详细"这类对助手的建议, 非用户长期事实)
+    const sys = "你是记忆提炼器。从对话中提取值得长期记忆的关键事实、用户偏好、待办事项。只输出 JSON 数组, 每项是{content: 一句完整中文记忆}。没有值得记的返回 []。不要解释, 只输出 JSON。\n跳过以下内容: 1) 寒暄/问候/客套话; 2) 无信息量的闲聊; 3) 对助手/系统本身的元讨论与建议 (如任务描述方式、提示词建议等); 4) 已被现有记忆覆盖的内容。";
     let userMsg = "用户: " + String(user).slice(0, 800) + "\n助手: " + String(assistant).slice(0, 800);
     // 感知已有记忆: 若提炼结果与已有记忆含义相同/已被覆盖, 不要输出该条
     if (existing.length) {
@@ -196,7 +202,7 @@ export class PPXAgent {
     const r = await this.llm.chat([
       { role: "system", content: sys },
       { role: "user", content: userMsg },
-    ]);
+    ], { timeoutMs: AUX_LLM_TIMEOUT_MS, retryMax: 0 });
     const text = String(r.content || "").trim();
     // 容忍模型把 JSON 包在 markdown 代码块里
     const cleaned = text.replace(/```(?:json|JSON)?\s*/g, "").replace(/```/g, "").trim();
@@ -209,22 +215,32 @@ export class PPXAgent {
     } catch { return []; }
   }
 
+  // 辅助 LLM 调用前置健康探测 (v1.0.7): 模型不可用 (本地服务未运行/远端不可达) 时快速跳过,
+  // 不发起 10s 超时等待 — 本地未运行的 health() 是 ECONNREFUSED 毫秒级失败, 开销可忽略
+  async _auxLlmReady() {
+    if (!this.llm) return false;
+    if (typeof this.llm.health !== "function") return true;
+    try { return await this.llm.health(); } catch { return false; }
+  }
+
   // 用 LLM 把旧对话浓缩成语义摘要 (Harness 上下文工程)
   async _summarizeMemory(raw) {
     if (!this.llm) throw new Error("无 LLM");
+    if (!(await this._auxLlmReady())) throw new Error("LLM 不可用, 跳过辅助摘要");
     const r = await this.llm.chat([
       { role: "system", content: "你是记忆压缩器。把下面这段对话记录压缩成一段简洁的中文摘要(≤200字), 保留关键事实、用户偏好、进展和待办。不要客套, 直接输出摘要。" },
       { role: "user", content: String(raw).slice(0, 4000) },
-    ]);
+    ], { timeoutMs: AUX_LLM_TIMEOUT_MS, retryMax: 0 });
     return r.content;
   }
 
   // P1: LLM 查询扩展 - 把问题改写成多个词面变体, 补语义召回 (零依赖, 复用已有 LLM)
   async _expandQuery(q) {
+    if (!(await this._auxLlmReady())) return []; // 模型不可用时跳过扩展 (退回单查询)
     const r = await this.llm.chat([
       { role: "system", content: "你是查询扩展器。把用户的问题改写成 3 个语义相近但词面不同的检索短语(用于语义记忆检索), 每行一个, 不要序号、不要解释。" },
       { role: "user", content: String(q).slice(0, 300) },
-    ]);
+    ], { timeoutMs: AUX_LLM_TIMEOUT_MS, retryMax: 0 });
     return String(r.content || "")
       .split(/\n+/)
       .map((s) => s.replace(/^[\d\.\-、)）]\s*/, "").trim())
@@ -322,6 +338,7 @@ export class PPXAgent {
   // (吸收 OpenClaw compaction: 摘要替换被压缩区间, 日志本身不可变)
   async _maybeCompact(sessionKey) {
     if (!this.llm) return;
+    if (!(await this._auxLlmReady())) return; // 模型不可用时跳过压缩 (交给 _trimHistory 硬裁剪)
     const events = this.sessionStore.replay(sessionKey);
     let upToSeq = 0;
     for (const e of events) if (e.type === "compaction/summary") upToSeq = e.data?.upToSeq || 0;
@@ -336,7 +353,7 @@ export class PPXAgent {
     const lastSeq = old[old.length - 1].seq;
     const transcript = transcriptToText(old.map((e) => ({ role: e.type === "user/message" ? "user" : "assistant", content: e.data?.content })));
     try {
-      const r = await this.llm.chat(buildCompactionMessages(transcript));
+      const r = await this.llm.chat(buildCompactionMessages(transcript), { timeoutMs: AUX_LLM_TIMEOUT_MS, retryMax: 0 });
       const summary = r?.content;
       if (summary) this.sessionStore.append(sessionKey, "compaction/summary", { summary, upToSeq: lastSeq });
     } catch {
@@ -554,7 +571,8 @@ export class PPXAgent {
   }
 
   // 统一工具执行入口 (供 http 原生 tool_calls + openclaw/dsh 围栏代理共用) [P0#1]
-  async _runTool(name, args, llmInstance) {
+  // v1.0.7: 移除未使用的 llmInstance 死参数, 所有工具执行统一走此入口 (trace/事件只此一份)
+  async _runTool(name, args) {
     const t0 = Date.now();
     this._lastTurnUsedTools = true;
     if (this._onToolEvent) { try { this._onToolEvent({ type: "start", tool: name, args, ts: Date.now() }); } catch {} }
@@ -583,11 +601,11 @@ export class PPXAgent {
     let errorRetries = 0;
 
     for (let round = 0; round < maxRounds; round++) {
-      if (this._interrupted) return "[interrupted] task cancelled by operator.";
+      if (this._interrupted) return "[皮皮虾] 任务已被中断 (operator cancelled).";
       if (this._onStepEvent) { try { this._onStepEvent({ type: "step", round, maxRounds, ts: Date.now() }); } catch {} }
       const resp = await llmInstance.apiChat(messages, {
         tools,
-        toolRunner: async (name, args) => this._runTool(name, args, llmInstance),
+        toolRunner: async (name, args) => this._runTool(name, args),
       });
       const msg = resp.message;
       messages.push(msg);
@@ -598,22 +616,13 @@ export class PPXAgent {
       }
 
       // 工具错误重试: 若本轮有工具失败, 汇总错误喂回模型修正后重试 (最多 errorRetries 次)
+      // v1.0.7: 统一走 _runTool (trace/事件只此一份, 不再内嵌重复执行)
       const errors = [];
       for (const tc of toolCalls) {
         if (tc.type === "function" && tc.function) {
           let args = {};
           try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
-          const t0 = Date.now();
-          this._lastTurnUsedTools = true;
-          const result = await this.tools.call(tc.function.name, args, { agent: this });
-          this.traces.record({
-            tool: tc.function.name,
-            args,
-            result: result.slice(0, 800),
-            ok: !result.startsWith(TOOL_ERROR_PREFIX),
-            durationMs: Date.now() - t0,
-            error: result.startsWith(TOOL_ERROR_PREFIX) ? result : null,
-          });
+          const result = await this._runTool(tc.function.name, args);
           messages.push({ role: "tool", tool_call_id: tc.id, content: toToolContent(result, resultBudget) });
           if (result.startsWith(TOOL_ERROR_PREFIX)) errors.push(result);
         }
@@ -685,7 +694,7 @@ export class PPXAgent {
     const m = String(userMsg).match(/经验交给皮皮虾[:：]\s*(.+)/i);
     if (m) {
       this.experience.learn({ task: "用户主动分享", lesson: m[1], tags: ["user-shared"] });
-      if (this.lifecycle) this.lifecycle.evolved += 1; // 生命周期: 进化计数
+      if (this.lifecycle) this.lifecycle.evolve(); // 生命周期: 进化计数 (落盘)
       info(`学到经验: ${m[1]}`);
     }
   }
@@ -704,12 +713,12 @@ export class PPXAgent {
       const r = await this.llm.chat([
         { role: "system", content: "你是经验提炼器。从失败的工具调用轨迹中提炼一条可复用的经验教训, 一句话说清: 什么场景、为什么失败、下次怎么做。只输出这一句话, 不要解释。" },
         { role: "user", content: summary.slice(0, 2000) },
-      ]);
+      ], { timeoutMs: AUX_LLM_TIMEOUT_MS, retryMax: 0 });
       lesson = String(r.content || "").trim();
     } catch { lesson = ""; }
     if (!lesson) return { distilled: 0, reason: "LLM 未产出经验" };
     this.experience.learn({ task: "自动提炼", lesson, tags: ["auto-refine"] });
-    if (this.lifecycle) this.lifecycle.evolved += 1; // 生命周期: 进化计数
+    if (this.lifecycle) this.lifecycle.evolve(); // 生命周期: 进化计数 (落盘)
     info(`[refine] 学到经验: ${lesson}`);
     return { distilled: 1, lesson };
   }
@@ -733,7 +742,7 @@ export class PPXAgent {
       const r = await this.llm.chat([
         { role: "system", content: "你是技能提炼器。根据成功的工具调用轨迹, 提炼一个可复用技能。只输出 JSON: {\"name\":\"技能名(仅字母数字横线)\",\"description\":\"一句话说明\",\"content\":\"SKILL正文, 含 ## 流程(逐步工作流) 和 ## 验证(完成后必须提供的证据)\"}。不要解释, 只输出 JSON。" },
         { role: "user", content: `高频工具: ${hot.join(", ")}\n成功轨迹:\n${summary.slice(0, 2000)}` },
-      ]);
+      ], { timeoutMs: AUX_LLM_TIMEOUT_MS, retryMax: 0 });
       const text = String(r.content || "").trim().replace(/```(?:json|JSON)?\s*/g, "").replace(/```/g, "").trim();
       const m = text.match(/\{[\s\S]*\}/);
       if (!m) return { created: 0, reason: "LLM 未产出有效 JSON" };
@@ -800,6 +809,11 @@ export class PPXAgent {
   async proactiveSuggest() {
     const out = await suggestProactive(this);
     return out ? out.text : null;
+  }
+
+  // 标记待办完成 (ANS): 之后不再主动提醒 (窗口去重 + 完成跟踪)
+  proactiveMarkDone(id) {
+    return markTaskDone(this, id);
   }
 
   // 启动主动任务生成定时器 (config.agent.proactive.enabled 才启用)

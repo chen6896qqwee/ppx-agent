@@ -4,6 +4,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { PPXAgent } from "./agent/index.js";
+import { suggestProactive } from "./ans/proactive.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const agent = new PPXAgent({ root: ROOT });
@@ -13,7 +14,7 @@ console.log("  皮皮虾 (PPX) - 自我修复·自我学习 Agent");
 console.log(`  记忆:${agent.facts.count()}条 | 经验:${agent.experience.lessons.length}条`);
 console.log(`  模型: ${agent.llm ? "已配置" : "未配置(离线记忆模式)"}`);
 console.log("  命令: quit/exit 退出 | /stop 中断当前任务 | /reset 清空会话");
-console.log("        /proactive 主动提醒(扫描记忆待办) | ↑↓ 浏览历史 | Ctrl+C 中断(再按一次退出)");
+console.log("        /proactive 主动提醒(扫描记忆待办) | /proactive-done <id> 标记待办完成 | ↑↓ 浏览历史 | Ctrl+C 中断(再按一次退出)");
 console.log("======================================");
 
 const rl = readline.createInterface({
@@ -59,16 +60,30 @@ rl.on("line", async (line) => {
     return rl.prompt();
   }
   // 主动任务生成: 扫描记忆里的待办/偏好, 给出主动提醒 (ANS 自主性)
+  // 输出含 id, 可用 /proactive-done <id> 标记完成 (窗口去重, 24h 内不重复提醒)
   if (text === "/proactive") {
     busy = true;
     try {
-      const msg = await agent.proactiveSuggest();
-      console.log(msg ? "\n" + msg + "\n" : "\n(暂时没有需要提醒的事项)\n");
+      const out = await suggestProactive(agent);
+      if (out) {
+        console.log("\n" + out.text + "\n");
+        for (const it of out.items) console.log(`  [${it.id}] ${it.content}`);
+        console.log("\n(用 /proactive-done <id> 标记完成, 之后不再提醒)\n");
+      } else {
+        console.log("\n(暂时没有需要提醒的事项)\n");
+      }
     } catch (e) {
       console.log("\n[错误] " + e.message + "\n");
     } finally {
       busy = false;
     }
+    return rl.prompt();
+  }
+  // 标记待办完成: /proactive-done <factId>
+  if (text.startsWith("/proactive-done")) {
+    const id = text.replace("/proactive-done", "").trim();
+    const ok = agent.proactiveMarkDone(id);
+    console.log(ok ? "(已标记完成, 之后不再提醒)" : "(待办不存在: " + id + ")");
     return rl.prompt();
   }
 

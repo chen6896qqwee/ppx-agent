@@ -389,11 +389,18 @@ export class FactStore {
 
   addMemory(message) {
     // 从对话中提取记忆: 简单启发式, 过滤掉问候/无信息量
-    const STOP = ["你好", "在吗", "谢谢", "好的", "嗯", "ok", "哈喽", "hello", "hi", "再见", "拜拜"];
+    // v1.0.7 治理: 子串/开头匹配拦"你好皮皮虾"类 (旧版精确匹配逃逸), 加长度上限防长文污染
+    const STOP = ["你好", "您好", "在吗", "谢谢", "感谢", "辛苦了", "收到", "哈喽", "hello", "hi", "再见", "拜拜", "好的", "嗯", "ok", "好的好的"];
     const clean = (message || "").trim();
-    if (!clean || clean.length < 4) return null;
+    // 太短 (<4) 无信息量, 太长 (>200) 不适合当原子事实 (整段对话原文不应入库)
+    if (!clean || clean.length < 4 || clean.length > 200) return null;
     const lower = clean.toLowerCase();
-    if (STOP.some((s) => lower === s.toLowerCase())) return null;
+    // 整句就是寒暄词 (精确)
+    if (STOP.some((s) => lower === s)) return null;
+    // 短句以寒暄词开头 (如 "你好皮皮虾", "好的没问题") → 不作为长期事实
+    if (clean.length <= 12 && STOP.some((s) => lower.startsWith(s))) return null;
+    // 疑问/指令短句 (如 "现在几点", "文件在哪") → 临时查询, 不作长期事实
+    if (clean.length <= 8 && /[?？]|几点|多少|什么|怎么|为什么|在哪|帮我|请|查一下/.test(clean)) return null;
     return this.add(clean, { source: "conversation" });
   }
 

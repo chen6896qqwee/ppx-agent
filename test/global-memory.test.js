@@ -38,14 +38,26 @@ test("withFileLock: 异常时锁被释放 (finally)", () => {
 test("经验库跨实例共享: 多实例交替 learn 不丢条目", () => {
   const dir = tmp("exp");
   const mk = () => new Experience(dir);
-  for (let i = 0; i < 5; i++) {
-    mk().learn({ task: "t", outcome: "o", lesson: `A 经验教训 ${i}` });
-    mk().learn({ task: "t", outcome: "o", lesson: `B 经验教训 ${i}` });
+  // 10 条互不相似的独立经验 (pairwise overlap < 0.5, 不触发同义合并), 专测文件锁不丢条目
+  const lessons = [
+    "多进程共享数据文件写入必须用文件锁",
+    "测试要用临时目录隔离避免污染生产数据",
+    "LLM 调用必须设置超时并做错误重试",
+    "工具调用结果要裁剪防止撑爆上下文",
+    "会话历史按信息量裁剪保留关键轮次",
+    "记忆提炼要跳过寒暄和元对话内容",
+    "主动提醒同一待办窗口内不重复推送",
+    "生命周期状态要落盘保证重启不丢失",
+    "命令执行前要经过命令守卫安全检查",
+    "HTTP 服务要开启鉴权防止未授权访问",
+  ];
+  for (let i = 0; i < lessons.length; i++) {
+    mk().learn({ task: "t", outcome: "o", lesson: lessons[i] });
   }
   const exp = new Experience(dir);
   assert.equal(exp.lessons.length, 10, "10 条经验全保留 (锁内重读+写回, 无并发覆盖丢失)");
-  assert.ok(exp.recall("A 经验教训 0").length >= 1, "能召回已共享的经验");
-  assert.ok(exp.recall("B 经验教训 4").length >= 1, "最后写入的经验也可召回");
+  assert.ok(exp.recall("多进程共享数据文件").length >= 1, "能召回已共享的经验");
+  assert.ok(exp.recall("HTTP 服务要开启鉴权").length >= 1, "最后写入的经验也可召回");
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

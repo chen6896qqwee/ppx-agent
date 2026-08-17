@@ -54,14 +54,18 @@ test("proactive: pendingTasks 返回结构化条目", () => {
 test("proactive: suggestProactive 返回 payload {ts, items, text}, proactiveSuggest 保持字符串", async () => {
   const agent = new PPXAgent({ root: tmp("pp") });
   agent.facts.add("记得下周要研究 A 股策略", { importance: 15 });
-  const payload = await suggestProactive(agent);
-  assert.ok(payload, "有待办时返回 payload");
-  assert.equal(typeof payload.ts, "number", "时间戳");
-  assert.ok(Array.isArray(payload.items) && payload.items.length >= 1, "结构化条目");
-  assert.ok(payload.text.includes("A 股策略"), "text 可直接投递");
   const msg = await agent.proactiveSuggest();
   assert.equal(typeof msg, "string", "兼容旧契约: 返回字符串");
   assert.ok(msg.includes("A 股策略"));
+  // 去重新语义 (v1.0.7): 刚提醒过, 窗口内再次调用返回 null (不重复打扰)
+  assert.equal(await agent.proactiveSuggest(), null, "窗口内不重复提醒");
+  // 新待办 → 验证结构化 payload
+  agent.facts.add("记得要准备下周的例会材料", { importance: 15 });
+  const payload = await suggestProactive(agent);
+  assert.ok(payload, "有新待办时返回 payload");
+  assert.equal(typeof payload.ts, "number", "时间戳");
+  assert.ok(Array.isArray(payload.items) && payload.items.length >= 1, "结构化条目");
+  assert.ok(payload.text.includes("例会材料"), "text 可直接投递");
   agent.shutdown();
   fs.rmSync(agent.dataDir, { recursive: true, force: true });
 });

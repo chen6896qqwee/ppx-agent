@@ -9,6 +9,7 @@ import { ensureDir, readText, writeText, logicalDay } from "../utils/store.js";
 const TURNS_PER_SUMMARY = 10;
 const COMPACT_THRESHOLD = 50;   // 今日事件超此条数触发滚动压缩
 const COMPACT_KEEP = 20;        // 压缩后保留的近期条数
+const COMPACT_MIN_INTERVAL_MS = 60000; // 压缩节流: 压缩后 60s 内不重复 (防每轮对话重复付 LLM 压缩成本, v1.0.7)
 
 // 派生今日视图行: 从 session 事件渲染 (role -> 中文说话人)
 function _renderLines(sessionStore, day) {
@@ -32,6 +33,7 @@ export class MemoryTicker {
     this.longtermMd = path.join(this.dir, "longterm.md");
     this.stateFile = path.join(this.dir, "daily-state.json");
     this.state = { day: null, turnCount: 0 };
+    this._lastCompactAt = 0; // 压缩节流时间戳 (v1.0.7)
     this._loadState();
     this._rollDay();
   }
@@ -109,7 +111,10 @@ ${lines.join("\n")}\n`);
   }
 
   // 滚动压缩: 今日事件超量时, 把最旧对话聚合压缩进 longterm, 只留近期
+  // v1.0.7 节流: 压缩后 COMPACT_MIN_INTERVAL_MS 内不重复, 防每轮对话都付 LLM 压缩成本
   async _compactIfNeeded() {
+    const now = Date.now();
+    if (now - (this._lastCompactAt || 0) < COMPACT_MIN_INTERVAL_MS) return;
     const lines = _renderLines(this.sessionStore, logicalDay());
     if (lines.length < COMPACT_THRESHOLD) return;
     const compactedLines = lines.slice(0, -COMPACT_KEEP);
@@ -134,6 +139,7 @@ ${lines.join("\n")}\n`);
     let longterm = readText(this.longtermMd) || "";
     longterm += "\n## " + logicalDay() + " (rollup)\n" + summary + "\n";
     writeText(this.longtermMd, longterm);
+    this._lastCompactAt = now; // 节流: 压缩完成后记录, 60s 内不再压缩
   }
 
   context(userMsg) {

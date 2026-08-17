@@ -82,3 +82,53 @@ test("HTTP 通道: 缺 message 返回 400", async () => {
     cleanup(svc);
   }
 });
+
+// ---- CORS 白名单 (v1.0.7) ----
+import { PPXAgent } from "../src/agent/index.js";
+import { HttpChannel } from "../src/channels/http.js";
+
+function corsBoot() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ppx-cors-"));
+  fs.mkdirSync(path.join(root, "config"), { recursive: true });
+  fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({ providers: [] }));
+  return root;
+}
+
+test("CORS: 未配置默认放行任意来源 (*)", async () => {
+  const root = corsBoot();
+  const agent = new PPXAgent({ root });
+  const ch = new HttpChannel(agent, { port: 0, host: "127.0.0.1" });
+  await ch.connect();
+  const port = ch.server.address().port;
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/health`, { headers: { Origin: "http://evil.example.com" } });
+    assert.equal(r.status, 200, "默认放行");
+    assert.equal(r.headers.get("access-control-allow-origin"), "*");
+  } finally {
+    await ch.disconnect();
+    agent.shutdown();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CORS: 配置白名单后不匹配来源 403, 匹配放行, 无 Origin 放行", async () => {
+  const root = corsBoot();
+  const agent = new PPXAgent({ root });
+  agent.config.channels.http.cors_origin = ["http://localhost:3000"]; // 构造前配置白名单
+  const ch = new HttpChannel(agent, { port: 0, host: "127.0.0.1" });
+  await ch.connect();
+  const port = ch.server.address().port;
+  try {
+    const ok = await fetch(`http://127.0.0.1:${port}/health`, { headers: { Origin: "http://localhost:3000" } });
+    assert.equal(ok.status, 200, "白名单内来源放行");
+    assert.equal(ok.headers.get("access-control-allow-origin"), "http://localhost:3000");
+    const denied = await fetch(`http://127.0.0.1:${port}/health`, { headers: { Origin: "http://evil.example.com" } });
+    assert.equal(denied.status, 403, "白名单外来源拒绝");
+    const noOrigin = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(noOrigin.status, 200, "无 Origin 的非浏览器请求放行");
+  } finally {
+    await ch.disconnect();
+    agent.shutdown();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

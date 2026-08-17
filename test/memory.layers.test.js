@@ -109,3 +109,18 @@ test("L3: 同一天不重复刷新画像", () => {
   assert.equal(before, after, "同一天不应重复写文件");
   a.shutdown();
 });
+
+// ---- 记忆噪声治理 (v1.0.7): 寒暄开头短句/过长文本不入库 ----
+test("addMemory 过滤: 寒暄词开头的短句不入库 (治理'你好皮皮虾'逃逸)", () => {
+  const a = new PPXAgent({ root: tmpRoot("addmem-noise") });
+  assert.equal(a.facts.addMemory("你好皮皮虾"), null, "'你好皮皮虾' 以寒暄词开头 → 拦截");
+  assert.equal(a.facts.addMemory("你好，做个自我介绍"), null, "'你好...' → 拦截");
+  assert.equal(a.facts.addMemory("好的"), null, "整句寒暄 → 拦截");
+  assert.equal(a.facts.addMemory("太短"), null, "长度 <4 → 拦截");
+  const long = "x".repeat(300);
+  assert.equal(a.facts.addMemory(long), null, "长度 >200 → 拦截");
+  assert.equal(a.facts.addMemory("现在几点"), null, "疑问/指令短句 → 拦截");
+  const f = a.facts.addMemory("兄弟喜欢做A股量化交易");
+  assert.equal(f.content, "兄弟喜欢做A股量化交易", "正常内容入库");
+  a.shutdown();
+});

@@ -9,6 +9,7 @@ import {
   listProviders, addProvider, updateProvider, removeProvider, reorderProviders,
 } from "../config/providers.js";
 import { getSettings, updateSettings } from "../config/settings.js";
+import { suggestProactive } from "../ans/proactive.js";
 
 const MAX_BODY = 1024 * 1024;          // 请求体上限 1MB
 const RATE_PER_MIN = 60;               // 每 IP 每分钟最大请求数 (令牌桶)
@@ -24,6 +25,19 @@ export class HttpChannel extends Channel {
     this.publicDir = path.join(this.agent.root, "public");
     this.authToken = process.env.PPX_AUTH_TOKEN || this._tokenFromConfig();
     this._buckets = new Map(); // ip -> {tokens, last}
+    // CORS 来源白名单 (v1.0.7): channels.http.cors_origin 数组; 未配置默认 * (向后兼容)
+    // 配置后仅放行白名单 origin, 其余跨域请求 403 (token 泄露时降低任意跨站读取风险)
+    this.corsOrigins = this._corsFromConfig();
+  }
+
+  _corsFromConfig() {
+    try {
+      const c = this.agent?.config?.channels?.http?.cors_origin;
+      if (c === undefined || c === null || c === "*") return [];
+      if (Array.isArray(c)) return c.filter(Boolean);
+      if (typeof c === "string") return [c];
+    } catch { /* 配置异常回退默认 */ }
+    return [];
   }
 
   _tokenFromConfig() {
@@ -97,8 +111,19 @@ export class HttpChannel extends Channel {
   async connect() {
     this._ensureToken(); // 启动时确保有 token
     this.server = http.createServer(async (req, res) => {
-      // CORS
-      res.setHeader("Access-Control-Allow-Origin", "*");
+      // CORS (v1.0.7): 默认 * (兼容); 配置 cors_origin 白名单时校验浏览器来源 (无 Origin 的非浏览器请求不受 CORS 约束)
+      const origin = req.headers.origin;
+      let allowOrigin = "*";
+      if (this.corsOrigins.length) {
+        allowOrigin = !origin ? "*" : (this.corsOrigins.includes(origin) ? origin : null);
+      }
+      if (!allowOrigin) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "origin not allowed" }));
+        return;
+      }
+      res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+      if (allowOrigin !== "*") res.setHeader("Vary", "Origin");
       res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
       if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
@@ -174,6 +199,18 @@ export class HttpChannel extends Channel {
         const list = (this.agent.sessionStore && this.agent.sessionStore.list) ? this.agent.sessionStore.list() : [];
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ sessions: list }));
+        return;
+      }
+
+      // 会话历史 (Web UI 切换会话时恢复消息显示): GET /sessions/:key/history
+      if (req.method === "GET" && /^\/sessions\/[^/]+\/history$/.test(reqPath)) {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const key = decodeURIComponent(reqPath.split("/")[2]);
+        const msgs = this.agent.sessionStore && typeof this.agent.sessionStore.deriveMessages === "function"
+          ? this.agent.sessionStore.deriveMessages(key)
+          : [];
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ sessionId: key, messages: msgs }));
         return;
       }
 
@@ -263,14 +300,30 @@ export class HttpChannel extends Channel {
         res.end(JSON.stringify({ facts, scenes }));
         return;
       }
-      // 主动任务生成 API (ANS 自主性): 扫描记忆待办/偏好, 返回主动提醒
+      // 主动任务生成 API (ANS 自主性): 扫描记忆待办/偏好, 返回主动提醒 + 结构化 items (含 id)
       if (req.method === "GET" && reqPath === "/api/proactive") {
         res.writeHead(200, { "Content-Type": "application/json" });
         try {
-          const msg = await this.agent.proactiveSuggest();
-          res.end(JSON.stringify({ message: msg }));
+          const out = await suggestProactive(this.agent);
+          res.end(JSON.stringify({ message: out ? out.text : null, items: out ? out.items : [] }));
         } catch (e) {
-          res.end(JSON.stringify({ message: null, error: e.message }));
+          res.end(JSON.stringify({ message: null, items: [], error: e.message }));
+        }
+        return;
+      }
+      // 标记待办完成 (ANS): POST /api/proactive/done { id } → 之后不再主动提醒
+      if (req.method === "POST" && reqPath === "/api/proactive/done") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const body = await this._readBody(req, res);
+        if (body === null) return;
+        try {
+          const data = JSON.parse(body || "{}");
+          const ok = this.agent.proactiveMarkDone(data.id);
+          res.writeHead(ok ? 200 : 404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok }));
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
         }
         return;
       }

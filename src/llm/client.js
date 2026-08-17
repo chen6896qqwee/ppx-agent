@@ -158,7 +158,8 @@ export class LLMClient {
   }
 
   // 原生 chat (无工具)
-  async chat(messages, { temperature = 0.7, maxTokens = 2048 } = {}) {
+  // timeoutMs/retryMax: 可选覆盖 provider 默认 (辅助调用传短超时+禁重试快速失败, 见 AUX_TIMEOUT_MS)
+  async chat(messages, { temperature = 0.7, maxTokens = 2048, timeoutMs, retryMax } = {}) {
     if (this.backend === "openclaw") {
       const r = await this._openclawChatAsync(messages);
       return { content: r.content, usage: r.usage };
@@ -167,14 +168,14 @@ export class LLMClient {
       const r = await this._dshChatAsync(messages);
       return { content: r.content, usage: r.usage };
     }
-    const data = await this._request("/chat/completions", { model: this.model, messages, temperature, max_tokens: maxTokens });
+    const data = await this._request("/chat/completions", { model: this.model, messages, temperature, max_tokens: maxTokens }, { timeoutMs, retryMax });
     const content = data?.choices?.[0]?.message?.content;
     if (!content) throw new Error("LLM 返回空内容");
     return { content, usage: data?.usage };
   }
 
   // API chat (支持工具调用), 返回完整 message (含 tool_calls)
-  async apiChat(messages, { tools = [], temperature = 0.7, maxTokens = 4096, toolRunner = null } = {}) {
+  async apiChat(messages, { tools = [], temperature = 0.7, maxTokens = 4096, toolRunner = null, timeoutMs, retryMax } = {}) {
     if (this.backend === "openclaw") {
       // OpenClaw 引擎是外部进程, 无法直接调用 PPX 内部工具。
       // 若提供 toolRunner, 走围栏代理循环: 引擎以纯 LLM 输出工具意图, PPX 解析执行。
@@ -190,7 +191,7 @@ export class LLMClient {
     }
     const body = { model: this.model, messages, temperature, max_tokens: maxTokens };
     if (tools.length) body.tools = tools;
-    const data = await this._request("/chat/completions", body);
+    const data = await this._request("/chat/completions", body, { timeoutMs, retryMax });
     const message = data?.choices?.[0]?.message;
     if (!message) throw new Error("LLM 返回空 message");
     let toolCalls = message.tool_calls || null;
@@ -287,12 +288,19 @@ export class LLMClient {
     return { message: { role: "assistant", content: finalText, tool_calls: null }, usage: null };
   }
 
-  async _request(path, jsonBody) {
+  // 辅助 LLM 调用短超时 (毫秒): 压缩/提炼/扩展/经验 等非主对话调用, 快速失败降级, 避免 120s 卡死
+  // 使用场景: 模型未运行/网络不通时, 主对话靠 localIntent 或回退, 辅助调用不应阻塞主流程
+  static get AUX_TIMEOUT_MS() { return 10000; }
+
+  async _request(path, jsonBody, { timeoutMs, retryMax } = {}) {
     if (!this.apiKey) throw new Error(`LLMClient: 缺少 API key (env=${this.apiKeyEnv() || "?"})`);
     const url = `${this.baseUrl}${path}`;
+    const ms = timeoutMs || this.timeoutMs;
+    // 辅助调用 (压缩/提炼/扩展等) 传 retryMax:0 禁重试: 短超时 + 不重试 = 快速失败降级, 不阻塞主流程
+    const maxRetries = retryMax === undefined ? this.retryMax : retryMax;
     const doFetch = async () => {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+      const timer = setTimeout(() => ctrl.abort(), ms);
       try {
         const resp = await fetch(url, {
           method: "POST",
@@ -312,7 +320,7 @@ export class LLMClient {
       }
     };
     // 瞬态错误(429/5xx/timeout)单次调用内重试, 非瞬态(400/401/403)立即抛给上层 provider 回退
-    return withRetry(doFetch, { maxRetries: this.retryMax });
+    return withRetry(doFetch, { maxRetries });
   }
 
   // 是否支持逐字流式: 仅直连 HTTP API 后端 (openclaw/deepseek 为外部进程, 一次性返回) [复审 P2]

@@ -17,14 +17,14 @@ export class ToolCatalog {
     }
     const meta = normalizeMeta(def); // 关键: execute 缺失由 normalizeMeta 的 name 校验兜底
     this.tools.set(meta.name, meta);
-    info(`capability registered: ${meta.name} [${meta.category}/${meta.power}]`);
+    info(`能力已注册: ${meta.name} [${meta.category}/${meta.power}]`);
     return this;
   }
 
   // ---- 热挂载: 卸载 ----
   unregister(name) {
     const had = this.tools.delete(name);
-    if (had) info(`capability unregistered: ${name}`);
+    if (had) info(`能力已卸载: ${name}`);
     return had;
   }
 

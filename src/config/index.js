@@ -52,7 +52,8 @@ export const DEFAULT_CONFIG = {
   plugins: { dir: "plugins" },
   mcp: { servers: [], auto_connect: false },
   channels: {
-    http: { enabled: true, port: 8899, auth_token: "" },
+    // cors_origin: CORS 来源白名单 (数组)。空数组/未配置 = 默认 * (兼容); 配置后仅放行白名单浏览器来源 (v1.0.7)
+    http: { enabled: true, port: 8899, auth_token: "", cors_origin: [] },
     feishu: { enabled: false, appId: "", appSecret: "", verifyToken: "" },
     wechat: { enabled: false, path: "/wechat/webhook", token: "", encodingAESKey: "", corpId: "", corpSecret: "", agentId: "" },
     log: { enabled: false, target: "console" },

@@ -101,6 +101,7 @@ npm run chat
 | 字段 | 说明 |
 |------|------|
 | `http.enabled` / `http.port` / `http.host` / `http.auth_token` | HTTP 通道（空 token 时启动自动生成随机 token） |
+| `http.cors_origin` | CORS 来源白名单（数组，如 `["http://localhost:3000"]`）。未配置/空 = 默认 `*`（兼容）；配置后仅放行白名单浏览器来源，其余跨域 403（无 Origin 的非浏览器请求不受限） |
 | `feishu.appId` / `appSecret` / `verifyToken` / `webhookPath` | 飞书通道（事件订阅回调） |
 | `wechat.path` / `token` / `encodingAESKey` | 企业微信回调（收消息） |
 | `wechat.corpId` / `corpSecret` / `agentId` | 企业微信主动推送（发消息） |

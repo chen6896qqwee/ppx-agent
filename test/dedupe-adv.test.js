@@ -31,6 +31,26 @@ test("Experience.learn: 不同 lesson 正常新增", () => {
   fs.rmSync(a.dataDir, { recursive: true, force: true });
 });
 
+// ---- 经验同义合并 (v1.0.7, 真实生产变体校准) ----
+test("Experience.learn: 同义改写变体合并而非新增", () => {
+  const a = new PPXAgent({ root: tmpRoot("exp3") });
+  a.experience.learn({ lesson: "零依赖比第三方依赖更稳" });
+  const r = a.experience.learn({ lesson: "零依赖最稳" }); // 真实生产同义变体 overlap 0.5
+  assert.equal(a.experience.lessons.length, 1, "同义变体只存 1 条");
+  assert.equal(r.uses, 1, "合并时 uses 累加");
+  a.shutdown();
+  fs.rmSync(a.dataDir, { recursive: true, force: true });
+});
+
+test("Experience.learn: 相关但不同的经验不误合并", () => {
+  const a = new PPXAgent({ root: tmpRoot("exp4") });
+  a.experience.learn({ lesson: "工具超时要设上限" });
+  a.experience.learn({ lesson: "设置超时上限防止命令卡死" }); // overlap 0.286 < 0.5
+  assert.equal(a.experience.lessons.length, 2, "相关但不同不合并");
+  a.shutdown();
+  fs.rmSync(a.dataDir, { recursive: true, force: true });
+});
+
 // ---- 记忆语义去重 (bigram Jaccard) ----
 test("FactStore._jaccard: 同义变体相似度高, 无关内容相似度低", () => {
   const a = new PPXAgent({ root: tmpRoot("jac") });
