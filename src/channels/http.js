@@ -262,6 +262,23 @@ export class HttpChannel extends Channel {
         res.end(JSON.stringify({ facts, scenes }));
         return;
       }
+      // 主动任务生成 API (ANS 自主性): 扫描记忆待办/偏好, 返回主动提醒
+      if (req.method === "GET" && reqPath === "/api/proactive") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        try {
+          const msg = await this.agent.proactiveSuggest();
+          res.end(JSON.stringify({ message: msg }));
+        } catch (e) {
+          res.end(JSON.stringify({ message: null, error: e.message }));
+        }
+        return;
+      }
+      // 生命周期状态 API (ANS): 阶段/年龄/进化/繁衍
+      if (req.method === "GET" && reqPath === "/api/lifecycle") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(this.agent.lifecycleStatus ? this.agent.lifecycleStatus() : {}));
+        return;
+      }
 
       // 提供方 API [本轮新增] - 模型配置 Web UI 后端
       // GET    /api/providers        列出全部提供方 (key 抹掉, 只返 api_key_set 标志)

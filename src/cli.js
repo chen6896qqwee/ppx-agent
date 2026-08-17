@@ -13,7 +13,7 @@ console.log("  皮皮虾 (PPX) - 自我修复·自我学习 Agent");
 console.log(`  记忆:${agent.facts.count()}条 | 经验:${agent.experience.lessons.length}条`);
 console.log(`  模型: ${agent.llm ? "已配置" : "未配置(离线记忆模式)"}`);
 console.log("  命令: quit/exit 退出 | /stop 中断当前任务 | /reset 清空会话");
-console.log("        ↑↓ 浏览历史 | Ctrl+C 中断(再按一次退出)");
+console.log("        /proactive 主动提醒(扫描记忆待办) | ↑↓ 浏览历史 | Ctrl+C 中断(再按一次退出)");
 console.log("======================================");
 
 const rl = readline.createInterface({
@@ -46,6 +46,19 @@ rl.on("line", async (line) => {
   if (text === "/reset") {
     agent.resetSession("default");
     console.log("(会话已清空)");
+    return rl.prompt();
+  }
+  // 主动任务生成: 扫描记忆里的待办/偏好, 给出主动提醒 (ANS 自主性)
+  if (text === "/proactive") {
+    busy = true;
+    try {
+      const msg = await agent.proactiveSuggest();
+      console.log(msg ? "\n" + msg + "\n" : "\n(暂时没有需要提醒的事项)\n");
+    } catch (e) {
+      console.log("\n[错误] " + e.message + "\n");
+    } finally {
+      busy = false;
+    }
     return rl.prompt();
   }
 
