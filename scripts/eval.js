@@ -47,7 +47,8 @@ function tmpRoot() {
 async function localCapabilities() {
   console.log("── (1) 本地能力层 (零依赖) ──");
   const root = tmpRoot();
-  const agent = new PPXAgent({ root });
+  // v1.0.9: 显式传 dataDir 覆盖 PPX_DATA_DIR 环境变量 — 否则该变量指向生产时, 评测会写/删生产数据 (P0)
+  const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
 
   // 问候识别 (本地意图, 不调 LLM)
   const greet = await agent.chat("你好");

@@ -160,8 +160,11 @@ export function registerMethodTools(catalog) {
       const user = `场景: ${scene.name}\\n历史对话:\\n${facts || "(无)"}`;
       try {
         const out = await llmChat(ctx.agent, system, user);
-        scene.description = out.split("能力")[0].replace("简介:", "").trim().slice(0, 300) || scene.description;
-        scene.canHelp = out.split("能力")[1]?.slice(0, 300) || scene.canHelp;
+        // v1.0.9: LLM 输出未含"能力"段时保留旧值 (原 split("能力")[0] 会拿整段污染 description)
+        if (out.includes("能力")) {
+          scene.description = out.split("能力")[0].replace("简介:", "").trim().slice(0, 300) || scene.description;
+          scene.canHelp = out.split("能力")[1]?.slice(0, 300) || scene.canHelp;
+        }
         scene.mode = "manual";
         ctx.agent.scenes._save();
         return out || "(无输出)";

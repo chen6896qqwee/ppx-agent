@@ -9,10 +9,15 @@ import { info, warn } from "../utils/logger.js";
 export { Context } from "./context.js";
 
 // 装配插件树: 顺序执行每个插件的 setup
+// v1.0.9: 单个插件 setup 抛错不中断整条装配链 (隔离失败, 其余插件照常)
 export function compose(ctx, plugins = []) {
   for (const p of plugins) {
-    if (typeof p === "function") p(ctx);
-    else if (p && typeof p.setup === "function") p.setup(ctx);
+    try {
+      if (typeof p === "function") p(ctx);
+      else if (p && typeof p.setup === "function") p.setup(ctx);
+    } catch (e) {
+      warn(`[plugins] setup 失败已隔离: ${(e && e.message) || e}`);
+    }
   }
   return ctx;
 }

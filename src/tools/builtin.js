@@ -33,10 +33,29 @@ export function imageFileToDataUrl(rootDir, p, { maxBytes = 8 * 1024 * 1024 } = 
 // 命令守卫的 isDeniedCommand/isAllowedCommand 兼容导出见 command-guard.js
 
 // 安全路径: 阻止逃出工作目录 (防路径穿越)
+// v1.0.9: 追加 realpath 校验 — 字符串前缀检查可被工作区内 symlink 指向外部绕过 (resolve 后仍在 root 内但实际文件在外部)
 function safePath(root, p) {
   const resolved = path.resolve(root, p);
   if (resolved !== root && !resolved.startsWith(root + path.sep)) {
     throw new Error(`路径越界拒绝: ${p}`);
+  }
+  try {
+    const realRoot = fs.realpathSync(root);
+    let target = resolved;
+    if (fs.existsSync(target)) {
+      target = fs.realpathSync(target); // 存在: 直接解析真实路径
+    } else {
+      // 不存在: 用最近已存在父目录的真实路径 + 剩余部分 (新建文件场景)
+      let dir = path.dirname(target);
+      while (dir !== root && dir !== path.dirname(dir) && !fs.existsSync(dir)) dir = path.dirname(dir);
+      target = path.join(fs.realpathSync(fs.existsSync(dir) ? dir : root), path.relative(dir, resolved));
+    }
+    if (target !== realRoot && !target.startsWith(realRoot + path.sep)) {
+      throw new Error(`路径越界拒绝 (符号链接): ${p}`);
+    }
+  } catch (e) {
+    if (e && e.message && e.message.includes("路径越界拒绝")) throw e;
+    // root 不存在等边缘: 退回前缀检查 (已通过)
   }
   return resolved;
 }
@@ -104,7 +123,8 @@ export function registerBuiltinTools(catalog, { rootDir, facts, memory }) {
       const p = safePath(rootDir, args.path);
       if (!fs.existsSync(p)) return JSON.stringify({ error: `文件不存在: ${args.path}` });
       const content = fs.readFileSync(p, "utf8");
-      return content.slice(0, 20000);
+      // v1.0.9: 输出 PII 脱敏 (与 run_command/code_act 一致, 文件可能含密钥/手机号)
+      return scrubPII(content).cleaned.slice(0, 20000);
     },
   });
 
@@ -121,10 +141,20 @@ export function registerBuiltinTools(catalog, { rootDir, facts, memory }) {
       required: ["path", "content"],
     },
     execute: async (args) => {
+      // v1.0.9: 写入内容上限 512KB (防撑爆磁盘); 路径是目录时给友好错误
+      const content = String(args.content ?? "");
+      if (content.length > 512 * 1024) return JSON.stringify({ error: `写入内容过大 (>512KB, 当前 ${content.length} 字符)` });
       const p = safePath(rootDir, args.path);
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(p, args.content, "utf8");
-      return JSON.stringify({ ok: true, bytes: Buffer.byteLength(args.content) });
+      if (fs.existsSync(p) && fs.statSync(p).isDirectory()) {
+        return JSON.stringify({ error: `目标是目录: ${args.path}` });
+      }
+      try {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, content, "utf8");
+        return JSON.stringify({ ok: true, bytes: Buffer.byteLength(content) });
+      } catch (e) {
+        return JSON.stringify({ error: `写入失败: ${e.message}` });
+      }
     },
   });
 

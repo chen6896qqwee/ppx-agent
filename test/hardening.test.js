@@ -148,3 +148,18 @@ test("delegate: parseReviewFindings 兼容中英文严重级 token", () => {
   assert.equal(f[3].severity, "Critical", "英文 Critical 保留");
   assert.equal(severityLabel("Critical"), "严重", "展示标签中文");
 });
+
+// ---- v1.0.9: FactStore snake 配置键生效 (原 DEFAULT_CONFIG snake 全部死键) ----
+import { FactStore } from "../src/memory/fact-store.js";
+
+test("FactStore: snake 配置键映射到 camel 实际生效", () => {
+  const dir = tmp("facts-snake");
+  const store = new FactStore(dir, { decay_per_day: 0.9, hit_bonus: 99, max_facts: 7 });
+  assert.equal(store.opts.decayPerDay, 0.9, "decay_per_day → decayPerDay");
+  assert.equal(store.opts.hitBonus, 99, "hit_bonus → hitBonus");
+  assert.equal(store.opts.maxFacts, 7, "max_facts → maxFacts");
+  // camel 键仍兼容
+  const store2 = new FactStore(dir, { decayPerDay: 0.5 });
+  assert.equal(store2.opts.decayPerDay, 0.5, "camel 键兼容");
+  fs.rmSync(dir, { recursive: true, force: true });
+});

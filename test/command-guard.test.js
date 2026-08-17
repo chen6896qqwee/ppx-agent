@@ -116,3 +116,20 @@ test("shell 信号终止错误附带可读说明", async () => {
 test("DENY_HINT 提示不要改写绕过", () => {
   assert.ok(DENY_HINT.includes("不要重试或改写"), DENY_HINT);
 });
+
+// ---- v1.0.9: allow_all snake 键生效 + HARD_BLOCK 前缀绕过修复 ----
+test("checkCommand: 兼容 snake 配置键 allow_all (原仅 camel 导致永不生效)", () => {
+  // security.allow_all=true (snake, config 实际键名) 应放行白名单外非高危命令
+  assert.equal(checkCommand("openssl req -new -x509", { allow_all: true }).ok, true, "snake allow_all 放行白名单外");
+  assert.equal(checkCommand("openssl req -new -x509", {}).ok, false, "未放行时白名单拦截");
+  // camel 键仍兼容
+  assert.equal(checkCommand("openssl req -new -x509", { allowAll: true }).ok, true, "camel allowAll 兼容");
+});
+
+test("HARD_BLOCK: 前缀变体不绕过根删除 (env/sudo 前缀)", () => {
+  assert.equal(checkCommand("env rm --no-preserve-root /", { allow_all: true }).ok, false, "env 前缀硬黑名单拦截");
+  assert.equal(checkCommand("sudo rm --no-preserve-root /", { allow_all: true }).ok, false, "sudo 前缀硬黑名单拦截");
+  assert.equal(checkCommand("sudo rm -rf /", { allow_all: true }).ok, false, "sudo rm -rf 拦截");
+  assert.equal(checkCommand("rm -rf -- /", { allow_all: true }).ok, false, "rm -rf -- / 拦截");
+  assert.equal(checkCommand("echo hi", { allow_all: true }).ok, true, "正常命令不受影响");
+});

@@ -15,9 +15,10 @@ export function normalizeCommand(cmd) {
 }
 
 // ---- 硬黑名单: allow_all 也无法放行 (破坏宿主 / 不可逆 / 远程代码落地执行) ----
+// v1.0.9: rm 类正则去掉行首/符号前缀限制 — `env rm --no-preserve-root /` 等前缀变体 (sudo/env/&&) 曾绕过
 export const HARD_BLOCK = [
-  { pattern: /(^|[;&|()])\s*rm\s+(-[a-z]*r[a-z]*\s+)*--?no-preserve-root(\s|$)/i, reason: "rm --no-preserve-root 破坏根目录" },
-  { pattern: /(^|[;&|()])\s*rm\s+(-[a-z]*r[a-z]*\s+)*\/\s*$/, reason: "rm -rf / 类删除根目录" },
+  { pattern: /rm\s+(-[a-z]*r[a-z]*\s+)*--?no-preserve-root(\s|$)/i, reason: "rm --no-preserve-root 破坏根目录" },
+  { pattern: /rm\s+(-[a-z]*r[a-z]*\s+)*\/\s*$/i, reason: "rm -rf / 类删除根目录" },
   { pattern: /:\s*\(\s*\)\s*\{\s*:\s*\|/, reason: "fork bomb 进程炸弹" },
   { pattern: /mkfs[.\s][^\n;]*\/dev\/(sd[a-z]|nvme[0-9])/i, reason: "格式化磁盘设备" },
   { pattern: /dd\s+[^\n;]*of=\/dev\/(sd[a-z]|nvme[0-9])/i, reason: "dd 写裸磁盘设备" },
@@ -55,7 +56,8 @@ export function globToRegExp(glob) {
 }
 
 // 统一检查入口:
-//   opts = { allowAll, allowPrefix, denyList, deny, hardBlock }
+//   opts = { allowAll|allow_all, allowPrefix, denyList, deny, hardBlock }
+//   v1.0.9: 兼容 snake 配置键 allow_all (config.security.allow_all 是 snake, 原只认 camel 导致 allow_all=true 永不生效)
 //   返回 { ok: true, normalized } | { ok: false, reason, hard }
 export function checkCommand(cmd, opts = {}) {
   const normalized = normalizeCommand(cmd);
@@ -83,7 +85,8 @@ export function checkCommand(cmd, opts = {}) {
   }
 
   // 4. 白名单前缀 (allow_all=false 时)
-  if (!opts || !opts.allowAll) {
+  const allowAll = !!(opts && (opts.allowAll || opts.allow_all));
+  if (!allowAll) {
     const allowPrefix = (opts && opts.allowPrefix) || DEFAULT_ALLOW_PREFIX;
     const first = normalized.split(/[\s|&;>]+/)[0];
     const hit = allowPrefix.some((a) => first.toLowerCase().replace(/\.exe$/i, "") === a.toLowerCase());
@@ -102,7 +105,7 @@ export function isDeniedCommand(cmd, options) {
 
 // 兼容导出 (旧 isAllowedCommand 语义: allow_all 直接放行, 否则查前缀白名单; 不查 deny)
 export function isAllowedCommand(cmd, options) {
-  if (options && options.allowAll) return true;
+  if (options && (options.allowAll || options.allow_all)) return true;
   const allowPrefix = (options && options.allowPrefix) || DEFAULT_ALLOW_PREFIX;
   const first = String(cmd || "").trim().split(/[\s|&;>]+/)[0];
   return allowPrefix.some((a) => first.toLowerCase().replace(/\.exe$/i, "") === a.toLowerCase());

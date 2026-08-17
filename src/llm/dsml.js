@@ -51,10 +51,12 @@ export function parseDsml(text) {
 }
 
 // 构造 DSML 工具调用说明 (注入给原生文本模型)
+// v1.0.9: 工具描述转义协议字符 (防恶意描述伪造 DSML 块); 参数值含字面 </｜DSML｜parameter> 会被截断属文本协议固有局限
 export function buildDsmlPrompt(tools) {
   const lines = (tools || []).map((t) => {
     const fn = t.function || t;
-    return `- ${fn.name}: ${fn.description || "(无描述)"}`;
+    const desc = String(fn.description || "(无描述)").replace(/[＜＞｜<>\|]/g, "");
+    return `- ${fn.name}: ${desc}`;
   }).join("\n");
   return [
     "[工具协议] 需要调用工具时, 用 DSML 格式输出 (不要假装执行):",

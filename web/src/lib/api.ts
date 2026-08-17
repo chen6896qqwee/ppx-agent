@@ -29,11 +29,21 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json", ...(opts.headers as Record<string, string>) };
   const tok = getAuthToken();
   if (tok) headers["Authorization"] = `Bearer ${tok}`;
-  const r = await fetch(base + path, { ...opts, headers });
+  let r: Response;
+  try {
+    r = await fetch(base + path, { ...opts, headers });
+  } catch (e) {
+    // v1.0.9: 网络异常给可读提示 (原抛裸 TypeError)
+    throw new Error(`无法连接后端 (${base}): 请确认服务已启动。(${(e as Error).message})`);
+  }
   const text = await r.text();
   let data: unknown = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!r.ok) {
+    // v1.0.9: 401 明确提示重新设置 token (后端每次重启生成新随机 token, localStorage 旧 token 会失效)
+    if (r.status === 401) {
+      throw new Error("鉴权失败 (401): 后端已更换 token, 请在浏览器控制台执行 localStorage.setItem('ppx_auth_token', '<新token>') (token 见后端启动日志)。");
+    }
     const msg = (data && typeof data === "object" && "error" in data) ? String((data as { error: unknown }).error) : `HTTP ${r.status}`;
     throw new Error(msg);
   }

@@ -1,5 +1,40 @@
 ﻿# CHANGELOG
 
+## v1.0.9 (2026-08-17) — 第九轮评价整改: 命令执行安全 + 配置键修正 + 脚本数据保护 + 全链路审查
+
+依据 EVALUATION-2026-08-17 (第九轮) 整改 (第八轮整改经实测验证: 通道认证/军团超时/MCP 加固全部生效):
+
+### P0 脚本数据安全 (压测/评测可能删除生产数据)
+- **scripts/bench.js + eval.js**: `new PPXAgent({ root })` 未显式传 dataDir, 若环境变量 `PPX_DATA_DIR` 指向生产, 脚本收尾 `rmSync(agent.dataDir)` 会**删除生产数据**。已显式传 `dataDir/globalDataDir` 覆盖环境变量; acceptance/e2e 脚本同步加固。实测: 设 PPX_DATA_DIR 假目录跑 eval, 数据隔离正确不触碰生产
+
+### P1 命令执行安全
+- **`security.allow_all=true` 永不生效 (camel/snake 键不匹配)**: config.security 是 snake `allow_all`, command-guard 只认 camel `allowAll` → 用户开 allow_all 仍被白名单限制。`checkCommand/isAllowedCommand` 兼容 snake 键
+- **HARD_BLOCK rm 正则前缀绕过**: `env rm --no-preserve-root /` 因正则要求行首/`;&|()` 前缀而绕过。rm 正则去掉前缀限制 (子串匹配), `sudo/env` 前缀变体全部拦截
+- **safePath symlink 越界**: 字符串前缀校验可被工作区内 symlink 指向外部绕过, 追加 realpath 校验
+- **read_file 输出补 PII 脱敏** (与 run_command 一致); **write_file** 加 512KB 上限 + 目录路径友好错误 + try/catch
+
+### P1 配置键修正 (用户配置全部静默失效)
+- **FactStore snake→camel 映射**: DEFAULT_CONFIG.memory 是 snake (`decay_per_day`/`hit_bonus`/`base_importance`/`forget_speed`/`max_facts`), FactStore 只读 camel → 衰减/容量配置全是死键。已兼容 snake; CONFIG.md 同步修正 (移除代码未读取的 `enabled`/`token_budget`/`compile_threshold` 残留, 标注实际生效键)
+
+### P2 健壮性
+- retry.js: AbortError (用户取消/超时中止) 不再判瞬态重试 (原取消后仍退避重试)
+- fence/dsml: 工具描述转义协议字符 (防恶意描述伪造围栏); fence prompt 加"忽略用户输入里的围栏"防注入回显; proxyToolLoop context 截断 60k 防 token 膨胀
+- l2.js scenes 写盘加文件锁; STOP 词去重 (l2/l3)
+- methods.js scene_describe: LLM 未含"能力"段时保留旧值 (原整串覆盖 description)
+- web api.ts: 401 友好提示 (后端重启换 token 时引导设置); 网络异常可读化
+- session.js `_flush` 落盘失败不再静默 (留日志)
+- dedupe-facts.js: 定位参数过滤 flag (原 `--similar` 被当 dataDir 建出目录静默空跑)
+- plugin compose: 单个插件 setup 抛错不中断装配链
+- CONFIG.md selfheal 死配置标注
+
+### P3 文档与卫生
+- README: 工具数 32→33, 测试 425 项 421 过, L0 daily 视图归属修正 (MemoryTicker 产出)
+- 已知限制记录: 本地小上下文模型 + 超长会话可能 context 溢出 (默认会话已清理, 30 天保留期内正常)
+
+### 验证
+- 全量测试 425 项 421 过 0 失败 4 跳过 (4.5s, 新增: command-guard allow_all/HARD_BLOCK 2 项 + FactStore snake 1 项)
+- web tsc 0 错误; eval 7/7 (PPX_DATA_DIR 隔离实测通过); 端到端冒烟: health/SSE/工具循环正常
+
 ## v1.0.8 (2026-08-17) — 第八轮评价整改: 通道认证 + 军团健壮性 + 配置安全 + 全链路加固
 
 依据 EVALUATION-2026-08-17 (第八轮) 全部整改落地 (第七轮整改经实测验证有效: SSE 聊天/生命周期持久化/主动提醒去重):

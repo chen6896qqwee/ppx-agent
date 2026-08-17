@@ -14,7 +14,9 @@ const simIdx = args.indexOf("--similar");
 const similarThreshold = simIdx >= 0 ? Number(args[simIdx + 1] || 0.6) : 0;
 const ovIdx = args.indexOf("--overlap");
 const overlapThreshold = ovIdx >= 0 ? Number(args[ovIdx + 1] || 0.65) : 0;
-const dataDir = path.resolve(args[0] || path.join(process.cwd(), "data"));
+// v1.0.9: 定位参数只取非 flag 项 — 原 args[0] 会拿到 "--similar" 并在 cwd 建出 "--similar/" 目录静默空跑
+const positional = args.filter((a) => !a.startsWith("--") && !/^[0-9.]+$/.test(a));
+const dataDir = path.resolve(positional[0] || path.join(process.cwd(), "data"));
 const store = new FactStore(dataDir);
 let before = store.list();
 

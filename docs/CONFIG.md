@@ -54,16 +54,15 @@ npm run chat
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
-| `enabled` | true | 记忆开关 |
-| `token_budget` | 2500 | 记忆注入的 token 预算 |
-| `decay_per_day` | 0.02 | L1 记忆高斯衰减率 |
-| `hit_bonus` | 5 | 命中加分 |
-| `base_importance` | 10 | 基础重要性 |
-| `compile_threshold` | 4.5 | L2 场景聚类阈值 |
-| `forget_speed` | 1 | 遗忘速度 |
+| `decay_per_day` | 0.02 | L1 记忆高斯衰减率（snake 键，实际生效） |
+| `hit_bonus` | 5 | 命中加分（实际生效） |
+| `base_importance` | 10 | 基础重要性（实际生效） |
+| `forget_speed` | 1 | 遗忘速度（实际生效） |
 | `max_history_items` | 40 | 会话历史条数上限 |
 | `history_token_budget` | 4000 | 会话历史 token 预算（超阈值触发压缩） |
 | `max_facts` | 1000 | L1 记忆总量上限 |
+| `session_max_age_days` | 30 | 会话日志保留天数（启动时清理过期会话，0=不清理） |
+| `enabled` / `token_budget` / `compile_threshold` | — | **预留字段，当前代码未读取**（记忆开关/注入预算/场景聚类阈值暂未实现） |
 
 ## embedding（可选，向量检索）
 

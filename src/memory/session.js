@@ -214,6 +214,9 @@ export class SessionStore {
         fs.appendFileSync(this._file(k), line, "utf8");
       }
       this._flushedSeq.set(k, evs[evs.length - 1].seq);
-    } catch {}
+    } catch (e) {
+      // v1.0.9: 落盘失败不再静默 (磁盘满/权限丢失消息不可见), 至少留日志
+      try { console.warn(`[session] 会话 ${k} 落盘失败: ${e.message}`); } catch {}
+    }
   }
 }

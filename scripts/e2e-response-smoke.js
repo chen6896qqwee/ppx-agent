@@ -91,7 +91,7 @@ async function agentLoop() {
     user: { name: "兄弟" },
   }, null, 2), "utf8");
 
-  const mk = () => new PPXAgent({ root });
+  const mk = () => new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
 
   // 启动 1: 对话 + 记忆写入
   const a1 = mk();

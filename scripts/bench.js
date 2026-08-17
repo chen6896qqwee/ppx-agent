@@ -29,7 +29,8 @@ function stubLLM() {
   fs.mkdirSync(path.join(root, "config"), { recursive: true });
   fs.writeFileSync(path.join(root, "config", "ppx.json"), JSON.stringify({ providers: [] }));
 
-  const agent = new PPXAgent({ root });
+  // v1.0.9: 显式传 dataDir 覆盖 PPX_DATA_DIR 环境变量 — 否则该变量指向生产时, 下方 rmSync 会删除生产数据 (P0)
+  const agent = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
   agent.llm = stubLLM();
 
   console.log(`皮皮虾内核压测 | 并发 ${CONCURRENCY} | 轮次 ${ROUNDS} | stub LLM\n`);

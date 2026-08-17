@@ -13,13 +13,20 @@ export class FactStore {
     this.dir = path.join(dataDir, "memory");
     ensureDir(this.dir);
     this.file = path.join(this.dir, "facts.json");
+    // v1.0.9: 兼容 snake 配置键 (config.memory 是 snake_case, 原只认 camel 导致衰减/容量配置全部死键不生效)
+    const SNAKE_TO_CAMEL = {
+      decay_per_day: "decayPerDay", hit_bonus: "hitBonus", base_importance: "baseImportance",
+      forget_speed: "forgetSpeed", max_facts: "maxFacts",
+    };
+    const normOpts = {};
+    for (const [k, v] of Object.entries(opts || {})) normOpts[SNAKE_TO_CAMEL[k] || k] = v;
     this.opts = {
       decayPerDay: 0.02,   // lambda
       hitBonus: 5,
       baseImportance: 10,
       forgetSpeed: 1.0,
       maxFacts: 1000,      // L1 事实总量上限, 超限按「衰减分×重要性」裁剪最弱 (0/负数=不裁剪)
-      ...opts,
+      ...normOpts,
     };
     this.facts = readJson(this.file, []);
     // 倒排索引: token -> Set<factId>, 检索 O(n) -> O(候选)

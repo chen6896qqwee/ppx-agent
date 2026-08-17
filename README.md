@@ -11,7 +11,7 @@
 | 能力 | 说明 |
 |------|------|
 | 🧠 **腾讯式四层记忆** | L0原始对话 → L1原子记忆(高斯衰减) → L2场景 → L3核心画像 |
-| 🔧 **32个内置工具** | 文件/命令/搜索/HTTP/定时/记忆检索/读图(多模态)/文档加载/文档入库/OCR/code_act(可选)/refine(失败→经验)/refine_skill(成功→技能) |
+| 🔧 **33个内置工具** | 文件/命令/搜索/HTTP/定时/记忆检索/读图(多模态)/文档加载/文档入库/OCR/code_act(可选)/refine(失败→经验)/refine_skill(成功→技能) |
 | 🩺 **自我修复** | 启动体检、损坏JSON自动修复、崩溃恢复、残留清理 |
 | 📚 **自我学习** | 经验库 + 自动提炼用户画像/agent人格 + refine 失败轨迹闭环 + refineSkill 成功轨迹沉淀技能 |
 | 🤖 **多 Agent 军团** | 多进程并行 + DAG 编排 + legion 模式 (broadcast/dispatch/runDag) + spawn_agent 自主协作 (并行/差异化视角/仲裁聚合/SDD 审查循环) |
@@ -110,7 +110,7 @@ npm run test
 对话 → L0 原始对话(session 事件日志) → L1 原子记忆(高斯衰减) → L2 场景(关键词聚类) → L3 画像(persona)
 ```
 
-- **L0**: 对话原文由会话事件日志 `data/sessions/*.jsonl` 全量承载 (每日派生视图见 `data/memory/daily/`), 过滤噪音
+- **L0**: 对话原文由会话事件日志 `data/sessions/*.jsonl` 全量承载; 每日滚动压缩视图由 MemoryTicker 产出到 `data/memory/daily/` + `longterm.md`, 过滤噪音
 - **L1**: `facts.json`, score = score × exp(-λt²), 命中加分
 - **L2**: `scenes.json`, 相关记忆聚类成场景
 - **L3**: `user.persona.md` + `agent.persona.md`, 从记忆提炼画像
@@ -136,7 +136,7 @@ ppx-agent/
 │   ├── llm/        LLM 客户端
 │   └── utils/      基础设施
 ├── data/           运行时数据 (不进 git)
-├── test/           测试 (422 项 418 过 0 失败 4 网络跳过)
+├── test/           测试 (425 项 421 过 0 失败 4 网络跳过)
 └── docs/           文档
 ```
 

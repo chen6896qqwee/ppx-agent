@@ -96,7 +96,7 @@ async function agentLoop() {
 
   let writeMs = 0, queryMs = 0, writeOk = false, queryOk = false, writeErr = "", queryErr = "";
   try {
-    const a1 = new PPXAgent({ root });
+    const a1 = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
     let t0 = Date.now();
     try {
       const reply1 = await a1.chat("记住: 我老婆生日是 8 月 20 号。");
@@ -106,7 +106,7 @@ async function agentLoop() {
     } catch (e) { writeErr = e.message; console.log(`  写入异常: ${e.message}`); }
     a1.shutdown();
 
-    const a2 = new PPXAgent({ root });
+    const a2 = new PPXAgent({ root, dataDir: path.join(root, "data"), globalDataDir: path.join(root, "data") });
     t0 = Date.now();
     try {
       const reply2 = await a2.chat("我老婆生日是哪天？");

@@ -2,10 +2,10 @@
 // 把相关记忆归档成场景: { name, keywords, facts[], lastUpdated }
 // 零依赖: 用关键词聚类 + 时间窗聚合
 import path from "node:path";
-import { ensureDir, readJson, writeJson, logicalDay } from "../utils/store.js";
+import { ensureDir, readJson, writeJson, logicalDay, withFileLock } from "../utils/store.js";
 
 // 中文简单分词: 提取有意义的词 (2字以上连续片段 + 已知高频概念)
-const STOP = new Set(["这个","那个","我们","你们","他们","什么","怎么","可以","一个","就是","知道","没有","如果","因为","所以","但是","然后","现在","今天","昨天","明天","已经","还有","所有","这样","那样","自己","的时候","一下","一点","一些","这些","那些","东西","事情","问题","觉得","应该","需要","开始","继续","大家","真的","只是","可能","不是","都是","一直","非常","其实","最后","最后","主要","联系","关系"]);
+const STOP = new Set(["这个","那个","我们","你们","他们","什么","怎么","可以","一个","就是","知道","没有","如果","因为","所以","但是","然后","现在","今天","昨天","明天","已经","还有","所有","这样","那样","自己","的时候","一下","一点","一些","这些","那些","东西","事情","问题","觉得","应该","需要","开始","继续","大家","真的","只是","可能","不是","都是","一直","非常","其实","最后","主要","联系","关系"]);
 
 function tokenize(text) {
   const clean = String(text || "").replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, " ");
@@ -56,8 +56,11 @@ export class SceneStore {
       };
       this.scenes.push(best);
     }
-    writeJson(this.file, this.scenes);
-    return best;
+    // v1.0.9: 写盘加文件锁 (防军团多进程共享 dataDir 时写交错)
+    return withFileLock(this.file, () => {
+      writeJson(this.file, this.scenes);
+      return best;
+    });
   }
 
   // 手动创建场景 (用户设定人设/能力, 类似灵魂文件)
@@ -123,5 +126,6 @@ export class SceneStore {
 
   count() { return this.scenes.length; }
 
-  _save() { writeJson(this.file, this.scenes); }
+  // v1.0.9: _save 加锁 (create/scene_describe 等写盘路径)
+  _save() { withFileLock(this.file, () => writeJson(this.file, this.scenes)); }
 }

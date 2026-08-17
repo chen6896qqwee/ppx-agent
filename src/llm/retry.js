@@ -16,13 +16,15 @@ export function httpStatusOf(err) {
 
 // 瞬态分类: 值得重试的错误 (openclaw operation-retry: 429/5xx/ENOTFOUND/timeout/fetch failed)
 export function isTransientError(err) {
+  // v1.0.9: AbortError (用户主动取消 / 内部超时中止) 一律不重试 — 原把 message "aborted" 判瞬态, 取消后仍退避重试
+  if (err && (err.name === "AbortError" || err.code === "ABORT_ERR")) return false;
   const status = httpStatusOf(err);
   if (status) {
     if (status === 429 || status >= 500) return true;
     if (status >= 400 && status < 500) return false; // 客户端错误不重试
   }
   const msg = String(err?.message || err || "");
-  if (/timeout|timed?\s*out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|network|socket hang up|aborted|undici/i.test(msg)) return true;
+  if (/timeout|timed?\s*out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|network|socket hang up|undici/i.test(msg)) return true;
   return false;
 }
 
