@@ -8,6 +8,7 @@ import { Channel } from "./base.js";
 import {
   listProviders, addProvider, updateProvider, removeProvider, reorderProviders,
 } from "../config/providers.js";
+import { getSettings, updateSettings } from "../config/settings.js";
 
 const MAX_BODY = 1024 * 1024;          // 请求体上限 1MB
 const RATE_PER_MIN = 60;               // 每 IP 每分钟最大请求数 (令牌桶)
@@ -394,6 +395,33 @@ export class HttpChannel extends Channel {
           this.agent.reloadProviders();
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, providers }));
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+        return;
+      }
+
+      // 通用设置 API: 用户名 / HTTP 端口 / 安全 / agent 预设
+      // GET /api/settings    返回可编辑设置 (敏感字段只回 set 标志)
+      // PUT /api/settings    更新 (body: { patch: { user?, http?, security?, agent? } })
+      if (req.method === "GET" && reqPath === "/api/settings") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ settings: getSettings(this.agent.root) }));
+        return;
+      }
+      if (req.method === "PUT" && reqPath === "/api/settings") {
+        if (!this._authed(req, res)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+        const body = await this._readBody(req, res);
+        if (body === null) return;
+        try {
+          const data = JSON.parse(body || "{}");
+          const settings = updateSettings(this.agent.root, data.patch || {});
+          // 热重载: 用户名/安全/agent 预设立即生效
+          this.agent.reloadSettings();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, settings }));
         } catch (e) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: e.message }));

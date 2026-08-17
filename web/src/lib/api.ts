@@ -89,3 +89,32 @@ export async function reorderProviders(order: string[]): Promise<{ ok: boolean; 
 export async function pingHealth(): Promise<{ status: string; agent: string }> {
   return request("/health");
 }
+
+// ---- 通用设置 ----
+export type AppSettings = {
+  user: { name: string };
+  http: { port: number; auth_token_set: boolean };
+  security: { allow_all: boolean; command_timeout_ms: number; code_act: boolean };
+  agent: {
+    name: string;
+    mode: string;
+    citation_rule: string;
+    system_extra: string;
+    values: string[];
+  };
+};
+
+export type SettingsPatch = {
+  user?: Partial<AppSettings["user"]>;
+  http?: Partial<Omit<AppSettings["http"], "auth_token_set">> & { auth_token?: string };
+  security?: Partial<AppSettings["security"]>;
+  agent?: Partial<AppSettings["agent"]>;
+};
+
+export async function getSettings(): Promise<{ settings: AppSettings }> {
+  return request("/api/settings");
+}
+
+export async function saveSettings(patch: SettingsPatch): Promise<{ ok: boolean; settings: AppSettings }> {
+  return request("/api/settings", { method: "PUT", body: JSON.stringify({ patch }) });
+}

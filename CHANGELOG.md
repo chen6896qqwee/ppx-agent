@@ -1,5 +1,24 @@
 ﻿# CHANGELOG
 
+## v1.0.5 (2026-08-17) — Web 设置页补齐 (1 精 3 空 → 4 全)
+
+依据 EVALUATION-2026-08-17 (第五轮) 补齐 Web 产品壳短板:
+
+### 后端
+- **`src/config/settings.js` (新建)**: 通用设置读写 (user/http/security/agent 预设), 复用 providers 的备份+原子写+校验模式
+- **`GET/PUT /api/settings`**: 读取安全视图 (auth_token 只回 set 标志) / 白名单字段更新 (端口 1-65535 / 超时 >=1000ms / values 字符串数组校验)
+- **`agent.reloadSettings()`**: 写盘后热重载 userName/mode/values, 立即生效
+- **`stats()` 扩展**: 新增 tools.list (明细+enabled+category) / skills 列表 / mcp 连接状态, 供插件页展示
+
+### 前端 (3 个占位页全部实现)
+- **通用设置页**: 用户名/HTTP 端口/安全 (allow_all+命令超时)/agent 名称+编排模式
+- **插件与能力页**: 内置工具启用状态 (绿/红点+分类) + 方法技能列表 + MCP 连接状态
+- **智能体预设页**: 核心价值 (values 按行编辑) / 额外系统提示词 (system_extra) / 引用规则 (citation_rule)
+
+### 验证
+- 全量测试 398 项 394 过 0 失败 4 跳过 (新增 9 项 settings-api)
+- web tsc --noEmit 0 错误; /api/settings GET/PUT 端到端冒烟通过 (含热重载)
+
 ## v1.0.4 (2026-08-17) — 感知式记忆提炼 + 存量变体清理
 
 依据 EVALUATION-2026-08-17 (第四轮) 三项整改全部落地:

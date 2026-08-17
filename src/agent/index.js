@@ -778,7 +778,15 @@ export class PPXAgent {
         l3: this.personaStore && this.personaStore.stats ? this.personaStore.stats() : {},
         ...(this.memory && this.memory.stats ? this.memory.stats() : {}),
       },
-      tools: { total: tools.length, enabled: tools.filter((t) => t.enabled).length },
+      tools: {
+        total: tools.length,
+        enabled: tools.filter((t) => t.enabled).length,
+        list: tools.map((t) => ({ name: t.name, enabled: t.enabled, category: t.category })),
+      },
+      skills: this.skills && typeof this.skills.list === "function"
+        ? this.skills.list().map((s) => ({ id: s.id, description: s.description }))
+        : [],
+      mcp: this._mcp ? { connected: true, count: this._mcp.count || 0 } : { connected: false, count: 0 },
       experience: this.experience ? { lessons: this.experience.lessons.length } : {},
       health: this.health || null,
     };
@@ -830,6 +838,16 @@ export class PPXAgent {
     this.allProviders = resolveAllLLMs(this.config);
     info(`[providers] 热重载完成: ${this.allProviders.length} 个客户端`);
     return { llm: this.llm ? (this.llm.backend || this.llm.model) : null, count: this.allProviders.length };
+  }
+
+  // 热重载通用设置 (用户名/安全/agent 预设): 重新加载 config + 更新内存字段
+  // 不重建 LLM 客户端 (settings 不涉及 provider), 只让 user.name/security/agent 生效
+  reloadSettings() {
+    this.config = this._loadConfig(null);
+    this.userName = this.config.user?.name || "兄弟";
+    this.ctx.provide("userName", this.userName);
+    info(`[settings] 热重载完成: 用户=${this.userName}, 模式=${this.config.agent?.mode || "react"}`);
+    return { userName: this.userName, mode: this.config.agent?.mode || "react" };
   }
 
   shutdown() {
