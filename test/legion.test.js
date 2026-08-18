@@ -19,7 +19,7 @@ test("军团: 并行 broadcast", async () => {
   legion.spawnAgent("a2");
   const results = await legion.broadcast("ping", "hi");
   assert.equal(results.length, 2);
-  assert.ok(results.every((r) => r.value?.type === "pong" || r.value?.type === "error"));
+  assert.ok(results.every((r) => r.type === "pong" || r.type === "error"));
   await legion.shutdownAll();
 });
 
