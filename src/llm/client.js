@@ -2,11 +2,12 @@
 // 后端两种模式:
 //   backend="openclaw" : 通过 `openclaw agent` CLI 驱动 OpenClaw 引擎 (底座=OpenClaw)
 //   backend="http"     : 直接 OpenAI 兼容 HTTP API (零依赖, 用 fetch)  [默认]
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
-import { info, warn, error } from "../utils/logger.js";
+import { info, warn } from "../utils/logger.js";
+import { estimateTokens, truncateByTokens } from "../utils/text.js";
 import { buildFencePrompt, proxyToolLoop, parseToolCalls } from "./fence.js";
 import { withRetry } from "./retry.js";
 
@@ -21,13 +22,6 @@ export function nodeVersionOk(version) {
          (maj === 24 && min >= 15) ||
          (maj === 25 && min >= 9) || maj > 25;
 }
-// 按 token 预算截断字符串 (用于 persona 截断, 保留头的 key 信息)
-function truncateByTokens(s, budget) {
-  const str = String(s || "");
-  const maxLen = Math.floor(budget * 1.6); // token*1.6 ≈ 字符
-  if (str.length <= maxLen) return str;
-  return str.slice(0, maxLen) + `\n...[persona 已按预算截断, 共 ${str.length} 字符]...`;
-}
 export class LLMClient {
   constructor(provider) {
     this.providerId = provider.id || "openclaw";
@@ -37,6 +31,7 @@ export class LLMClient {
       : "http";
     this.baseUrl = (provider.base_url || "").replace(/\/$/, "");
     this.apiKey = provider.api_key || process.env[provider.api_key_env] || "";
+    this.apiKeyEnvName = provider.api_key_env || ""; // 供缺失 key 报错时提示应设置的环境变量名
     this.model = provider.model || provider.models?.chat || "gpt-4o-mini";
     this.vision = !!provider.vision; // 是否支持多模态 (视觉) — 标记后才会注入图片到 user 消息
     // 上下文窗口 (token): 供 agent 据此收紧会话历史预算, 防止本地小模型溢出。
@@ -79,50 +74,13 @@ export class LLMClient {
         });
       });
       const j = JSON.parse(stdout);
-      if (j.status && j.status !== "ok") throw new Error(`OpenClaw run status=${j.status}`);
+      if (j.status && j.status !== "ok") throw new Error(`[皮皮虾] OpenClaw 执行状态异常 (status=${j.status})`);
       const payloads = j?.result?.payloads || [];
       const content = payloads.map(p => p?.text || "").filter(Boolean).join("\n");
       if (!content) {
         const alt = j?.result?.meta?.finalAssistantVisibleText;
         if (alt) return { content: alt, usage: null };
-        throw new Error("OpenClaw 返回空内容");
-      }
-      return { content, usage: null, meta: { engine: "openclaw", runId: j.runId } };
-    } finally {
-      try { fs.rmSync(tmp, { force: true }); } catch {}
-    }
-  }
-
-  // ===== OpenClaw 后端: 写临时 UTF-8 消息文件 -> openclaw agent --json -> 提取 payloads[].text ====
-  _openclawChat(messages) {
-    this._openclawReadyOrThrow();
-    const lastUser = [...messages].reverse().find(m => m && (m.role === "user"));
-    const text = lastUser?.content || "";
-    const tmp = path.join(os.tmpdir(), `ppx_msg_${Date.now()}_${this._tmpCounter++}.txt`);
-    fs.writeFileSync(tmp, String(text), "utf8");
-    try {
-      const args = [
-        this.mjs,
-        "agent",
-        "--session-key", this.sessionKey,
-        "--message-file", tmp,
-        "--json",
-        "--timeout", String(Math.floor(this.timeoutMs / 1000)),
-      ];
-      let stdout;
-      try {
-        stdout = execFileSync(process.execPath, args, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024, timeout: this.timeoutMs + 15000 });
-      } catch (e) {
-        throw this._translateOpenclawError(e);
-      }
-      const j = JSON.parse(stdout);
-      if (j.status && j.status !== "ok") throw new Error(`OpenClaw run status=${j.status}`);
-      const payloads = j?.result?.payloads || [];
-      const content = payloads.map(p => p?.text || "").filter(Boolean).join("\n");
-      if (!content) {
-        const alt = j?.result?.meta?.finalAssistantVisibleText;
-        if (alt) return { content: alt, usage: null };
-        throw new Error("OpenClaw 返回空内容");
+        throw new Error("OpenClaw 返回空内容 (runId=" + (j.runId ?? "?") + ")");
       }
       return { content, usage: null, meta: { engine: "openclaw", runId: j.runId } };
     } finally {
@@ -228,7 +186,6 @@ export class LLMClient {
   static get FENCE_CTX_TOKEN_BUDGET() { return 2400; }
   static get FENCE_PERSONA_RATIO() { return 0.4; }
   static get FENCE_HIST_BUDGET() { return 2400 * 0.6; }
-  static _estTokens(s) { return Math.ceil(String(s || "").length / 1.6); }
   // 信息量启发: 含指令/数字/路径/结论的轮次更该保留
   static _histPriority(m) {
     const s = String(m?.content || "");
@@ -257,7 +214,7 @@ export class LLMClient {
     for (let i = recent.length - 1; i >= 0; i--) {
       const m = recent[i];
       const line = (m.role === "user" ? "用户" : "助手") + ": " + String(m.content || "");
-      const t = LLMClient._estTokens(line);
+      const t = estimateTokens(line);
       if (used + t > histBudget) continue; // 超预算跳过(不截断硬塞)
       histLines.push(line); used += t;
     }
@@ -267,7 +224,7 @@ export class LLMClient {
       const m = older[i];
       if (LLMClient._histPriority(m) < 2) continue; // 只补高信息量
       const line = (m.role === "user" ? "用户" : "助手") + ": " + String(m.content || "");
-      const t = LLMClient._estTokens(line);
+      const t = estimateTokens(line);
       if (used + t > histBudget) break;
       histLines.push(line); used += t;
     }
@@ -296,7 +253,7 @@ export class LLMClient {
   static get AUX_TIMEOUT_MS() { return 10000; }
 
   async _request(path, jsonBody, { timeoutMs, retryMax } = {}) {
-    if (!this.apiKey) throw new Error(`LLMClient: 缺少 API key (env=${this.apiKeyEnv() || "?"})`);
+    if (!this.apiKey) throw new Error(`[皮皮虾] LLM 缺少 API key (env=${this.apiKeyEnvName || "?"})`);
     const url = `${this.baseUrl}${path}`;
     const ms = timeoutMs || this.timeoutMs;
     // 辅助调用 (压缩/提炼/扩展等) 传 retryMax:0 禁重试: 短超时 + 不重试 = 快速失败降级, 不阻塞主流程
@@ -333,10 +290,6 @@ export class LLMClient {
   // openclaw 是完整 agent 运行时, 拒绝 PPX 的围栏协议(视为伪协议); dsh 走文本围栏。
   // 工具类任务应优先路由到支持原生 tool_calls 的后端 (实测 LM Studio 原生 tool_calls 全链路通过)。
   get supportsNativeToolCalls() { return this.backend === "http"; }
-
-  apiKeyEnv() {
-    return undefined;
-  }
 
   // openclaw 后端: 启动前校验 Node 版本, 不满足则抛中文引导错误 (而非原始报错)
   _openclawReadyOrThrow() {
@@ -405,7 +358,7 @@ export class LLMClient {
       if (onDelta) onDelta(r.content);
       return r.content;
     }
-    if (!this.apiKey) throw new Error(`LLMClient: 缺少 API key`);
+    if (!this.apiKey) throw new Error(`[皮皮虾] LLM 缺少 API key`);
     const url = `${this.baseUrl}/chat/completions`;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
@@ -427,25 +380,26 @@ export class LLMClient {
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
-      while (true) {
+      let streamDone = false; // 独立结束信号, 不污染 reader.read() 的 done
+      while (!streamDone) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         // 按行解析 SSE
         let idx;
-        while ((idx = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, idx).trim();
+        while (!streamDone && (idx = buf.indexOf("\n")) !== -1) {
+          const line = buf.slice(0, idx).trim().replace(/\r$/, "");
           buf = buf.slice(idx + 1);
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
-          if (data === "[DONE]") { done = true; break; }
+          // 官方结束信号: 仅匹配空格式的 "data: [DONE]", 不做 buf 全文搜防误截
+          if (data === "[DONE]") { streamDone = true; break; }
           try {
             const j = JSON.parse(data);
             const delta = j.choices?.[0]?.delta?.content;
             if (delta) { full += delta; onDelta && onDelta(delta); }
           } catch {}
         }
-        if (buf.includes("[DONE]")) break;
       }
       return full;
     } finally {

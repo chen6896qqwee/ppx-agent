@@ -6,12 +6,14 @@ import { fileURLToPath } from "node:url";
 import { TOOL_ERROR_PREFIX } from "../tools/index.js";
 import { imageFileToDataUrl } from "../tools/builtin.js";
 import { logicalDay } from "../utils/store.js";
+import { estimateTokens } from "../utils/text.js";
 import { loadConfig } from "../config/index.js";
 import { info, warn, error } from "../utils/logger.js";
 import { Context, compose, loadPlugins } from "../plugin/index.js";
 import { builtinPlugins, resolveLLM, resolveAllLLMs } from "../plugin/builtin.js";
 import { registerMcpTools } from "../mcp/index.js";
 import { buildCompactionMessages, transcriptToText } from "../memory/compaction.js";
+import { buildDsmlPrompt } from "../llm/dsml.js";
 // ANS 独立模块 (可更换): 价值对齐 / 自主任务生成 / 生命周期
 import { Lifecycle } from "../ans/lifecycle.js";
 import { valuesPrompt } from "../ans/values.js";
@@ -56,9 +58,6 @@ export function LLM_FAILED_HINT(message) {
   return `[皮皮虾] LLM 调用失败: ${message}
 排查指引: 1) 检查 config/ppx.json 的 providers 是否配置了可用的 API key (export XXX_API_KEY=...); 2) 本地模型 (lmstudio) 是否在运行; 3) 启动 ppx-serve 看日志确认模型加载。`;
 }
-
-// 估算 token: 中文字符约1字=0.6token, 1token约4字符
-function estimateTokens(s){ return Math.ceil(String(s||'').length / 1.6); }
 
 // L4 toolResultBudget: 裁剪超长工具结果, 保留头尾关键信息 (默认 4000, config.agent.tool_result_budget 可调)
 export function trimToolResult(r, budget = DEFAULT_TOOL_RESULT_BUDGET) {
@@ -195,7 +194,7 @@ export class PPXAgent {
   enableReadonlyMode() {
     const disabled = [
       "run_command", "write_file", "code_act", "create_skill",
-      "memory_add", "add_schedule", "remove_schedule",
+      "memory_add", "add_schedule",
       "scene_create", "scene_describe", "spawn_agent", "refine_skill",
       "refine", // v1.0.8: refine 会写经验库, 只读审查者也不应触发
     ];
@@ -407,10 +406,12 @@ export class PPXAgent {
   }
 
   // 追加一轮对话为不可变事件 (append-only, 永不重写日志)
+  // v1.1.1: user+assistant 一次批量落盘 (skipFlush), 一轮对话只写一次磁盘而非两次
   _pushTurn(sessionKey, userMsg, assistant) {
     const k = sessionKey || "default";
-    this.sessionStore.append(k, "user/message", { content: String(userMsg) });
-    if (assistant) this.sessionStore.append(k, "assistant/message", { content: String(assistant) });
+    this.sessionStore.append(k, "user/message", { content: String(userMsg) }, Date.now(), { skipFlush: true });
+    if (assistant) this.sessionStore.append(k, "assistant/message", { content: String(assistant) }, Date.now(), { skipFlush: true });
+    this.sessionStore.flush(k);
   }
 
   // 加载历史: 先尝试结构化压缩(超阈值), 再按预算裁剪
@@ -476,7 +477,20 @@ export class PPXAgent {
     const active = this.scenes.activeContext(userMsg || "");
     const baseCtx = active ? base + "\n\n" + active : base;
     const skills = this._skillsPrompt();
-    return [values, baseCtx, skills, citation, perspective, extra].filter(Boolean).join("\n\n");
+    // DSML 原生文本模型 opt-in (provider.dsml=true): 注入工具协议, 让模型能稳定输出 DSML 结构做工具调用
+    const dsml = this._dsmlPrompt();
+    return [values, baseCtx, skills, citation, perspective, extra, dsml].filter(Boolean).join("\n\n");
+  }
+
+  // DSML 工具调用协议注入 (v1.1.1 接线): 修复 buildDsmlPrompt 过去从未注入的缺口。
+  // 仅当激活的 http provider 显式 dsml=true 且工具启用时注入; 默认所有 provider 不注入(零回归)。
+  _dsmlPrompt() {
+    try {
+      if (!(this.llm && this.llm.dsml === true)) return "";
+      if (!this.toolsEnabled || !this.tools) return "";
+      const tools = this.tools.toOpenAI();
+      return buildDsmlPrompt(tools);
+    } catch { return ""; }
   }
 
   // 核心价值文本 (委托 ans/values 模块): 数组 → 固定格式注入 (无值时不注入, 向后兼容)
