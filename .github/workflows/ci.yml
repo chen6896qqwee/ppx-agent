@@ -14,3 +14,22 @@ jobs:
       - name: Run full test suite
         run: npm test
         timeout-minutes: 15
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web deps
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Type check
+        working-directory: web
+        run: npx tsc --noEmit
+      - name: Production build
+        working-directory: web
+        run: npm run build
+        timeout-minutes: 10
