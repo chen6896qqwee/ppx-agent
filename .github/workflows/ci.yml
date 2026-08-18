@@ -1,14 +1,17 @@
-# 皮皮虾 CI/CD — 每次 push / PR 自动跑全量测试 + 前端类型检查 + 本地能力评测
 name: CI
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  # 内核: 全量测试 (零依赖, 网络型测试默认跳过)
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -19,12 +22,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      # 内核零运行时依赖, 无需 npm install
-      - name: 全量测试
+      - name: Run full test suite
         run: npm test
         timeout-minutes: 15
 
-  # Web UI: 类型检查 + 生产构建
   web:
     runs-on: ubuntu-latest
     steps:
@@ -34,18 +35,17 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: 安装 web 依赖
+      - name: Install web deps
         working-directory: web
         run: npm ci --no-audit --no-fund
-      - name: 类型检查
+      - name: Type check
         working-directory: web
         run: npx tsc --noEmit
-      - name: 生产构建
+      - name: Production build
         working-directory: web
         run: npm run build
         timeout-minutes: 10
 
-  # 能力评测: 本地能力必跑; 配了 PPX_E2E_* secrets 时额外跑 LLM 端到端回归
   eval:
     runs-on: ubuntu-latest
     steps:
@@ -53,10 +53,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: 本地能力评测
+      - name: Local capability eval
         run: node scripts/eval.js
         timeout-minutes: 5
-      - name: LLM 端到端回归 (配置了 secrets 时)
+      - name: LLM E2E regression
         if: ${{ secrets.PPX_E2E_BASE_URL != '' }}
         env:
           PPX_E2E_BASE_URL: ${{ secrets.PPX_E2E_BASE_URL }}
