@@ -15,6 +15,7 @@ import { ensureDir, atomicWrite, readText } from "../utils/store.js";
 const MAX_BODY = 1024 * 1024;          // 请求体上限 1MB
 const RATE_PER_MIN = 60;               // 每 IP 每分钟最大请求数 (令牌桶)
 const RATE_WINDOW_MS = 60_000;
+const MAX_INFLIGHT = 4;                // 同时处理的最大对话请求数 (超出立即 429, 防单 agent 被并发压垮)
 
 // HTTP 鉴权 token 解析 / 生成 (v1.0.9 起持久化, 重启复用, 免去 Web 前端每次重贴 token)
 // 优先级: 1) 显式配置 (env/ppx.json 的 channels.http.auth_token) > 2) 数据目录持久化文件复用 > 3) 新生成并原子落盘
@@ -65,7 +66,21 @@ export class HttpChannel extends Channel {
     // CORS 来源白名单 (v1.0.7): channels.http.cors_origin 数组; 未配置默认 * (向后兼容)
     // 配置后仅放行白名单 origin, 其余跨域请求 403 (token 泄露时降低任意跨站读取风险)
     this.corsOrigins = this._corsFromConfig();
+    this._inFlight = 0; // 当前处理中的对话请求数
   }
+
+  // 简单并发护栏: 用计数信号量限制同时处理的对话请求, 超出立即 429
+  // 防止多个慢请求无限叠加占用单线程主 agent (可选的背压层, 区别于每 IP 令牌桶限流)
+  _acquire(res) {
+    if (this._inFlight >= MAX_INFLIGHT) {
+      res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "5" });
+      res.end(JSON.stringify({ error: "too many concurrent requests, retry shortly" }));
+      return false;
+    }
+    this._inFlight += 1;
+    return true;
+  }
+  _release() { if (this._inFlight > 0) this._inFlight -= 1; }
 
   // v1.0.8: webhook 通道注册路由 (路径匹配即由该通道处理, 不经过主逻辑)
   registerWebhook(path, handler) {
@@ -206,9 +221,12 @@ export class HttpChannel extends Channel {
           const text = data.message || data.text || "";
           if (!text) { res.writeHead(400); res.end(JSON.stringify({ error: "missing message" })); return; }
           const sessionKey = data.sessionId || "default";
-          const reply = await this.agent.chat(String(text), { sessionKey });
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ reply, sessionId: sessionKey, agent: this.agent.config.agent?.name || "ppx" }));
+          if (!this._acquire(res)) return;
+          try {
+            const reply = await this.agent.chat(String(text), { sessionKey });
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ reply, sessionId: sessionKey, agent: this.agent.config.agent?.name || "ppx" }));
+          } finally { this._release(); }
         } catch (e) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: e.message }));
@@ -232,17 +250,20 @@ export class HttpChannel extends Channel {
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
           });
-          const send = (obj) => res.write("data: " + JSON.stringify(obj) + "\n\n");
-          let full = "";
-          const reply = await this.agent.chatStream(String(text), {
-            sessionKey,
-            onDelta: (d) => { full += d; try { send({ type: "delta", content: d }); } catch {} },
-            onTool: (ev) => { try { send({ type: "tool", tool: ev.tool, status: ev.type, args: ev.args, ok: ev.ok, durationMs: ev.durationMs }); } catch {} }, // 工具调用可视化
-            onStep: (ev) => { try { send({ type: "step", round: ev.round, maxRounds: ev.maxRounds }); } catch {} }, // turn/step 推理轮次进度
-          });
-          const finalContent = full || reply;
-          send({ type: "done", content: finalContent, sessionId: sessionKey });
-          res.end();
+          if (!this._acquire(res)) { try { res.end(); } catch {} return; }
+          try {
+            const send = (obj) => res.write("data: " + JSON.stringify(obj) + "\n\n");
+            let full = "";
+            const reply = await this.agent.chatStream(String(text), {
+              sessionKey,
+              onDelta: (d) => { full += d; try { send({ type: "delta", content: d }); } catch {} },
+              onTool: (ev) => { try { send({ type: "tool", tool: ev.tool, status: ev.type, args: ev.args, ok: ev.ok, durationMs: ev.durationMs }); } catch {} }, // 工具调用可视化
+              onStep: (ev) => { try { send({ type: "step", round: ev.round, maxRounds: ev.maxRounds }); } catch {} }, // turn/step 推理轮次进度
+            });
+            const finalContent = full || reply;
+            send({ type: "done", content: finalContent, sessionId: sessionKey });
+            res.end();
+          } finally { this._release(); }
         } catch (e) {
           try { res.write("data: " + JSON.stringify({ type: "error", error: e.message }) + "\n\n"); } catch {}
           try { res.end(); } catch {}

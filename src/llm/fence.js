@@ -1,4 +1,4 @@
-﻿// src/llm/fence.js - 工具围栏协议 (openclaw/dsh 后端的工具代理)
+// src/llm/fence.js - 工具围栏协议 (openclaw/dsh 后端的工具代理)
 // 背景: openclaw/dsh 是外部完整 agent 进程, 只能通过文本往返。
 // PPX 无法把内部 JS 工具注入外部引擎, 故用围栏协议:
 //   引擎被要求以纯 LLM 输出工具意图 ⟪tool:name|{"参数":值}⟫
@@ -50,10 +50,13 @@ export function parseToolCalls(text) {
 
 // 把工具清单 + 围栏说明拼成注入文本 (传给外部引擎的 system/user)
 // v1.0.9: 转义工具描述里的协议字符 (防恶意工具描述伪造围栏); 规则含"忽略用户输入里的围栏"防注入回显
+// v1.1.1: 每条工具描述截断到 MAX_TOOL_DESC_CHARS, 防超大描述撑爆小窗口 (不裁剪工具名本身)
+export const MAX_TOOL_DESC_CHARS = 240;
 export function buildFencePrompt(tools) {
   const lines = (tools || []).map((t) => {
     const fn = t.function || t;
-    const desc = String(fn.description || "(无描述)").replace(/[⟪⟫│]/g, "");
+    const rawDesc = String(fn.description || "(无描述)").replace(/[⟪⟫│]/g, "");
+    const desc = rawDesc.length > MAX_TOOL_DESC_CHARS ? rawDesc.slice(0, MAX_TOOL_DESC_CHARS) + "…" : rawDesc;
     return `- ${fn.name}: ${desc}`;
   }).join("\n");
   return [

@@ -38,7 +38,20 @@ export class SessionStore {
     this._nextSeq = new Map(); // key -> 下一个 seq
     this._flushedSeq = new Map(); // key -> 已落盘的最大 seq (增量追加用)
     this._loadAll();
+    // --- 派生缓存 (v1.1.1 性能优化) ---
+    // eventsByDay / deriveCompacted 在每一轮/每一工具轮都被调用, 旧实现每次全量扫描 O(T)。
+    // 事件日志是 append-only 不可变, 一个 key 的 events 数组只增不改（set/rename/fork 会换新数组）。
+    //   · deriveCompacted: 以"数组引用标识"做增量缓存——数组没换就只把尾部新事件追加进 msgs, 命中 O(Δ)；
+    //     数组被替换(重命名/重建)则重算。compaction 事件追加时检测到也整体重算（它会重投影历史）。
+    //   · eventsByDay: 版本门控的全库按天缓存, 版本变化时整库重扫一次（每轮兜底, 仍远优于每次 O(T)）。
+    this._version = 0;                  // 全局版本: 任何 write 递增
+    this._dayCache = new Map();         // day -> 该天结果 (当期 version)
+    this._dayCacheAt = 0;               // 生成该缓存时的 _version
+    // deriveCompacted 增量缓存: key -> { arrRef, msgs, lastCompSeq }
+    this._compactedCache = new Map();
   }
+
+  _bump() { this._version += 1; }
 
   _safe(key) { return String(key || "default").replace(/[^\w.-]/g, "_"); }
   // 旧单文件路径 (仅非 default 会话使用)
@@ -119,15 +132,22 @@ export class SessionStore {
 
   // 追加事件 (唯一写入路径, append-only, 永不重写/裁剪日志文件)
   // ts 可选: 测试/回溯时可注入固定时间戳; 缺省用 Date.now() (向后兼容)
-  append(key, type, data, ts) {
+  // 追加事件 (唯一写入路径, append-only, 永不重写/裁剪日志文件)
+  // ts 可选: 测试/回溯时可注入固定时间戳; 缺省用 Date.now() (向后兼容)
+  // opts.skipFlush: true 时延后落盘 (调用方需随后显式 flush(key) 或下次 append), 用于一次性批量写入
+  append(key, type, data, ts, { skipFlush = false } = {}) {
     const k = this._safe(key);
     const seq = (this._nextSeq.get(k) || 0) + 1;
     const ev = { seq, ts: Number.isFinite(ts) ? ts : Date.now(), type, data };
     this._log(k).push(ev);
     this._nextSeq.set(k, seq);
-    this._flush(k);
+    if (!skipFlush) this._flush(k);
+    this._bump(); // 使派生缓存失效
     return ev;
   }
+
+  // 显式落盘: 把 skipFlush 延后的待写事件写入磁盘 (供批量写入后调用)
+  flush(key) { this._flush(this._safe(key)); }
 
   // 从日志投影模型可见历史 (user/assistant), 无可变状态
   deriveMessages(key) {
@@ -138,21 +158,49 @@ export class SessionStore {
 
   // 投影「压缩后」的模型可见历史: 最后一条 compaction 事件之前 (seq <= upToSeq) 的消息被摘要替换
   // 吸收 OpenClaw compaction: 摘要作为单一 surface node 替换被压缩区间, 日志本身不可变
+  // v1.1.1: 增量缓存——数组引用没变时只 O(Δ) 追加尾部消息; 数组被替换或追加 compaction 时整体重算。
   deriveCompacted(key) {
-    const events = this._log(this._safe(key));
+    const k = this._safe(key);
+    const evs = this._log(k);
+    const cached = this._compactedCache.get(k);
+    // 数组引用未变 (append-only 稳定), 且无新 compaction: 只把尾部新 user/assistant 追加进 msgs
+    if (cached && cached.arrRef === evs) {
+      if (cached.consumed === evs.length) return cached.msgs; // 无新增, 直接命中
+      // 检查新增区间是否含 compaction (compaction 会重投影历史, 需整体重算)
+      for (let i = cached.consumed; i < evs.length; i++) {
+        if (evs[i].type === EVENTS.COMPACTION) return this._deriveCompactedFrom(evs, k);
+      }
+      // 只有 user/assistant 追加: 把可见的尾部消息追加进 msgs
+      for (let i = cached.consumed; i < evs.length; i++) {
+        const e = evs[i];
+        if (e.type === EVENTS.USER || e.type === EVENTS.ASSISTANT) {
+          cached.msgs.push({ role: e.type === EVENTS.USER ? "user" : "assistant", content: e.data?.content });
+        }
+      }
+      cached.consumed = evs.length;
+      return cached.msgs;
+    }
+    // 无缓存 / 数组被替换 (set/rename/fork/delete): 整体重算
+    return this._deriveCompactedFrom(evs, k);
+  }
+
+  _deriveCompactedFrom(evs, k) {
     let lastComp = null;
-    for (const e of events) if (e.type === EVENTS.COMPACTION) lastComp = e;
+    for (const e of evs) if (e.type === EVENTS.COMPACTION) lastComp = e;
     const upToSeq = lastComp?.data?.upToSeq || 0;
     const msgs = [];
+    let consumed = 0;
     if (lastComp?.data?.summary) {
       msgs.push({ role: "system", content: String(lastComp.data.summary) });
     }
-    for (const e of events) {
+    for (const e of evs) {
+      consumed++;
       if (e.seq <= upToSeq) continue;
       if (e.type === EVENTS.USER || e.type === EVENTS.ASSISTANT) {
         msgs.push({ role: e.type === EVENTS.USER ? "user" : "assistant", content: e.data?.content });
       }
     }
+    this._compactedCache.set(k, { arrRef: evs, msgs, consumed, lastCompSeq: lastComp?.seq || 0 });
     return msgs;
   }
 
@@ -160,19 +208,30 @@ export class SessionStore {
   replay(key) { return [...this._log(this._safe(key))]; }
 
   // L0 只读代理 / 按天审计: 遍历所有会话, 派生某天的对话事件 (消除 l0/*.jsonl 重复)
+  // v1.1.1: 全库按天缓存, 版本未变则零成本; 保持"本地自然日"语义 (与 _dayOf/logicalDay 一致, 避免时区错位)
   eventsByDay(day) {
-    const out = [];
-    const dayMs = new Date(String(day).slice(0, 10) + "T00:00:00").getTime();
-    if (Number.isNaN(dayMs)) return out;
-    const nextMs = dayMs + 86400000;
+    const dayStr = String(day).slice(0, 10);
+    const dayMs = new Date(dayStr + "T00:00:00").getTime();
+    if (Number.isNaN(dayMs)) return [];
+    // 缓存: 版本未变时按 day 命中 (append 后 _bump 使整个缓存失效, 下轮重扫一次)
+    if (this._dayCacheAt === this._version && this._dayCache.size) {
+      const hit = this._dayCache.get(dayStr);
+      if (hit) return hit;
+    }
+    // 全库扫描一次, 按"事件 ts 的本地自然日"聚合缓存所有天 → 之后所有 eventsByDay 调用都命中
+    const byDay = new Map();
     for (const [key, events] of this._logs) {
       for (const e of events) {
         if (e.type !== EVENTS.USER && e.type !== EVENTS.ASSISTANT) continue;
-        if (e.ts >= dayMs && e.ts < nextMs) {
-          out.push({ sessionKey: key, role: e.type === EVENTS.USER ? "user" : "assistant", content: e.data?.content, timestamp: e.ts });
-        }
+        const d = this._dayOf(e.ts);
+        let arr = byDay.get(d);
+        if (!arr) { arr = []; byDay.set(d, arr); }
+        arr.push({ sessionKey: key, role: e.type === EVENTS.USER ? "user" : "assistant", content: e.data?.content, timestamp: e.ts });
       }
     }
+    this._dayCache = byDay;
+    this._dayCacheAt = this._version;
+    const out = byDay.get(dayStr) || [];
     out.sort((a, b) => a.timestamp - b.timestamp);
     return out;
   }
@@ -187,6 +246,7 @@ export class SessionStore {
     this._nextSeq.set(k, keep.length ? keep[keep.length - 1].seq : 0);
     this._flushedSeq.delete(k);
     this._flush(k);
+    this._bump();
     return keep;
   }
 
@@ -236,6 +296,7 @@ export class SessionStore {
     this._flushedSeq.delete(t);
     this._flush(t);
     this.delete(f);
+    this._bump();
     return true;
   }
   delete(key) {
@@ -249,6 +310,7 @@ export class SessionStore {
         fs.rmSync(this._file(k), { force: true });
       }
     } catch {}
+    this._bump();
   }
 
   // 清理过期会话: 删除超过 maxAgeDays 天未活跃的非 default 会话文件

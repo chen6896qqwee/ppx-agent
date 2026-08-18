@@ -48,19 +48,36 @@ export function topoLevels(nodes) {
 
 // 执行 DAG: 每层节点并行, 上游结果作为 deps 传给下游 executor。
 // executor(id, node, deps) => Promise<result>, deps = { 依赖id: 结果 }
-export async function runDag(graph, executor) {
+// concurrency: 每层并发的上限 (默认 0 = 不设限, 兼容旧调用; Legion 会传入自己的 maxConcurrent)
+export async function runDag(graph, executor, { concurrency = 0 } = {}) {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const levels = topoLevels(graph.nodes);
   const results = {};
   const order = [];
+  const cap = concurrency > 0 ? concurrency : Infinity;
   for (const level of levels) {
-    await Promise.all(level.map(async (id) => {
+    // 有界并发: 层内若超出 cap, 用轮询槽位的方式逐个交给并行执行, 避免一次性 Promise.all 打爆子进程
+    let idx = 0;
+    const runOne = async (id) => {
       const node = byId.get(id);
       const deps = {};
       for (const d of node.dependsOn || []) deps[d] = results[d];
       results[id] = await executor(id, node, deps);
       order.push(id);
-    }));
+    };
+    await new Promise((resolveAll) => {
+      let active = 0;
+      let doneCount = 0;
+      const tick = () => {
+        while (active < cap && idx < level.length) {
+          const id = level[idx++];
+          active++;
+          runOne(id).finally(() => { active--; doneCount++; tick(); });
+        }
+        if (doneCount >= level.length) resolveAll();
+      };
+      tick();
+    });
   }
   return { results, order };
 }

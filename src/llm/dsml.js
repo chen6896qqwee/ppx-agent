@@ -52,10 +52,13 @@ export function parseDsml(text) {
 
 // 构造 DSML 工具调用说明 (注入给原生文本模型)
 // v1.0.9: 工具描述转义协议字符 (防恶意描述伪造 DSML 块); 参数值含字面 </｜DSML｜parameter> 会被截断属文本协议固有局限
+// v1.1.1: 每条工具描述截断到 MAX_TOOL_DESC_CHARS, 小窗口下防工具描述体量膨胀 (不裁剪工具名)
+export const MAX_TOOL_DESC_CHARS = 240;
 export function buildDsmlPrompt(tools) {
   const lines = (tools || []).map((t) => {
     const fn = t.function || t;
-    const desc = String(fn.description || "(无描述)").replace(/[＜＞｜<>\|]/g, "");
+    const rawDesc = String(fn.description || "(无描述)").replace(/[＜＞｜<>\|]/g, "");
+    const desc = rawDesc.length > MAX_TOOL_DESC_CHARS ? rawDesc.slice(0, MAX_TOOL_DESC_CHARS) + "…" : rawDesc;
     return `- ${fn.name}: ${desc}`;
   }).join("\n");
   return [

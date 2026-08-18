@@ -1,6 +1,6 @@
 {
   "name": "ppx-agent",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "皮皮虾 (PPX Agent) - 会自我修复、自我学习的超级 Agent. 零依赖纯Node智能体内核.",
   "type": "module",
   "license": "Apache-2.0",
@@ -10,9 +10,9 @@
   },
   "main": "src/agent/index.js",
   "bin": {
-    "ppx": "src/cli.js",
-    "ppx-serve": "src/server.js",
-    "ppx-channels": "src/channels-cli.js"
+    "ppx": "bin/ppx.js",
+    "ppx-serve": "bin/ppx-serve.js",
+    "ppx-channels": "bin/ppx-channels.js"
   },
   "repository": {
     "type": "git",
@@ -41,6 +41,7 @@
     "zero-dependency"
   ],
   "files": [
+    "bin/",
     "src/",
     "config/",
     "README.md",

@@ -44,3 +44,28 @@ test("runDag: 依赖数据流 + 拓扑执行顺序", async () => {
   assert.equal(order[order.length - 1], "d");
   assert.equal(new Set(order).size, 4);
 });
+
+test("runDag: concurrency 限流 (层内并发不超过上限)", async () => {
+  const graph = {
+    nodes: [
+      { id: "a" }, { id: "b" }, { id: "c" }, { id: "d" },
+    ],
+  };
+  let active = 0, peak = 0, calls = 0;
+  const { results } = await runDag(graph, async (id) => {
+    active++; peak = Math.max(peak, active);
+    await new Promise((r) => setTimeout(r, 5));
+    active--; calls++;
+    return id;
+  }, { concurrency: 2 });
+  assert.equal(calls, 4, "全部节点执行");
+  assert.ok(peak <= 2, `并发峰值 ${peak} <= 2`);
+  assert.deepEqual(Object.keys(results).sort(), ["a", "b", "c", "d"]);
+});
+
+test("runDag: concurrency 缺省时不限流 (兼容旧调用)", async () => {
+  const graph = { nodes: [{ id: "a" }, { id: "b" }, { id: "c" }] };
+  let peak = 0, active = 0;
+  await runDag(graph, async () => { active++; peak = Math.max(peak, active); await new Promise((r) => setTimeout(r, 3)); active--; }, {});
+  assert.equal(peak, 3, "层内 3 节点全部并行");
+});

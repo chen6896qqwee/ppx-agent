@@ -41,6 +41,17 @@ test("providers: validate 合法 http", () => {
   assert.equal(err, null);
 });
 
+test("providers: dsml 类型校验 (v1.1.1 新增键)", () => {
+  // 合法 boolean
+  const ok = validateProvider({ id: "ds4", base_url: "https://x/v1", model: "deepseek-ds4", dsml: true });
+  assert.equal(ok, null, "dsml:true 合法");
+  const ok2 = validateProvider({ id: "ds4", base_url: "https://x/v1", model: "m", dsml: false });
+  assert.equal(ok2, null, "dsml:false 合法");
+  // 非法类型
+  const bad = validateProvider({ id: "ds4", base_url: "https://x/v1", model: "m", dsml: "yes" });
+  assert.ok(bad && /dsml/.test(bad), "dsml 非布尔应报错: " + bad);
+});
+
 test("providers: validate 合法 openclaw (缺 mjs 应报错)", () => {
   const err = validateProvider({ id: "openclaw", backend: "openclaw" });
   assert.ok(err && /mjs/.test(err), "openclaw 缺 mjs 应报错");

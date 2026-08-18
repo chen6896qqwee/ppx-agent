@@ -1,4 +1,5 @@
-﻿// src/server.js - 皮皮虾 HTTP 服务入口
+#!/usr/bin/env node
+// src/server.js - 皮皮虾 HTTP 服务入口
 // 提供: /health, /message (HTTP通道), /feishu/webhook, /wechat/webhook
 // 通道统一走 ChannelManager 注册表: connect + webhook 挂载由各通道 mount() 完成
 import { PPXAgent } from "./agent/index.js";
@@ -37,11 +38,9 @@ export async function startServer({ root = process.cwd(), port = 8899, host = "1
   };
 }
 
-// 直接运行
-const _entry = (process.argv[1] || "").replace(/\\/g, "/");
-if (_entry.endsWith("src/server.js")) {
-  const port = Number(process.env.PPX_PORT || 8899);
-  const { agent, server, manager } = await startServer({ root: process.cwd(), port });
+// CLI 启动公共逻辑: 供 bin/ppx-serve 与 src/server.js 直接运行共用
+export async function runServer({ root = process.cwd(), port = Number(process.env.PPX_PORT || 8899) } = {}) {
+  const { agent, server, manager } = await startServer({ root, port });
   console.log(`皮皮虾 服务已启动: http://127.0.0.1:${port}`);
   console.log(`  /health   健康检查`);
   console.log(`  /message  HTTP 对话通道 (POST {message})`);
@@ -49,4 +48,11 @@ if (_entry.endsWith("src/server.js")) {
   console.log(`  工具: ${agent.tools.list().join(", ")}`);
   console.log("  Ctrl+C 退出");
   process.on("SIGINT", () => { agent.shutdown(); process.exit(0); });
+  return { agent, server, manager };
+}
+
+// 直接运行 (node src/server.js, scripts/start-web.js)
+const _entry = (process.argv[1] || "").replace(/\\/g, "/");
+if (_entry.endsWith("src/server.js")) {
+  await runServer({ root: process.cwd() });
 }

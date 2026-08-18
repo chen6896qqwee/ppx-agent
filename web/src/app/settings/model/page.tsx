@@ -189,7 +189,7 @@ function ProviderDialog({
           </div>
         )}
 
-        <Field label="Provider ID" hint="小写字母开头, 仅含字母/数字/横线/下划线, 2-30 字符">
+        <Field label="提供方 ID（Provider ID）" hint="小写字母开头, 仅含字母/数字/横线/下划线, 2-30 字符">
           <input disabled={isEdit} value={form.id || ""} onChange={(e) => up("id", e.target.value)} placeholder="如 deepseek" className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-[13px] outline-none focus:border-[#1d5cff] disabled:opacity-50" />
         </Field>
 

@@ -14,7 +14,7 @@ import { info, warn, error } from "../utils/logger.js";
 const PROVIDER_KEYS = [
   "id", "backend", "base_url", "api_key", "api_key_env",
   "model", "models", "vision", "timeout_ms",
-  "mjs", "session_key", "dsh_root",
+  "mjs", "session_key", "dsh_root", "dsml",
 ];
 
 function getProvidersPath(root) {
@@ -78,6 +78,7 @@ export function validateProvider(p) {
     if (!p.base_url) return "http 后端需 base_url";
   }
   if (p.vision != null && typeof p.vision !== "boolean") return "vision 必须是布尔";
+  if (p.dsml != null && typeof p.dsml !== "boolean") return "dsml 必须是布尔";
   if (p.timeout_ms != null && (!Number.isFinite(p.timeout_ms) || p.timeout_ms < 1000)) return "timeout_ms 至少 1000ms";
   // 占位符校验: 模板残留 (如 REPLACE_WITH_YOUR_ENDPOINT) 视为未配置, 避免配了 key 却静默失败
   for (const field of ["model", "base_url", "api_key"]) {

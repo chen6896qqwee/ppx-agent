@@ -1,5 +1,52 @@
 # CHANGELOG
 
+## v1.1.1 (2026-08-18) — bin 入口可执行性修复 + 性能/可靠性/一致性全面整改
+
+v1.1.0 首次 npm 发布后暴露一个入口缺陷: `ppx-serve` 指向的 `src/server.js` 首行是 **UTF-8 BOM 且无 shebang**。npm 全局安装后 `ppx-serve` 被 symlink 到该文件, shell 无 shebang 会按默认 sh 解析, 遇到 JS 语法直接报错; 即便补 shebang, 前置 BOM 也会让内核把它当普通文本导致 shebang 仍失效。本版修复根因并重构为更稳的 bin 包装层。在此基础上, 依据对 v1.1.1 源码的全面评价(六维取证), 本轮同步落地一批性能/可靠性/一致性的代码整改。
+
+### 入口修复
+- **`src/server.js` 去 BOM + 补 shebang**: 删除文件首行 UTF-8 BOM(三字节 `EF BB BF`), 首行改为 `#!/usr/bin/env node`, 保存为无 BOM 的 UTF-8。`ppx-serve` 现在可被直接执行
+- 验证: 文件头字节 `23 21`(`#!`), 无 BOM 前缀; `node --check` 语法通过; `bin/ppx-serve` 启动后 `GET /health` 返回 `{"status":"ok","agent":"皮皮虾"}`
+
+### bin 包装层 (更稳做法, 业务文件不再直接当 CLI 入口)
+- **新增 `bin/` 纯 shebang 包装脚本**, 三个 npm 命令统一走干净入口, 即使被杀瘘文件带 BOM 也不影响 CLI 执行:
+  - `bin/ppx.js` → `import "../src/cli.js"`
+  - `bin/ppx-serve.js` → `import { runServer } from "../src/server.js"` 并显式启动
+  - `bin/ppx-channels.js` → `import "../src/channels-cli.js"`
+- **`src/server.js` 提取 `runServer()` 公共启动逻辑**, 保持原有 `export async function startServer()` 导出(测试/web 均从它 import)和 `node src/server.js` / `scripts/start-web.js` 直接运行两条路径不变
+- **`package.json`**: `bin` 三个目标改为 `bin/ppx.js` / `bin/ppx-serve.js` / `bin/ppx-channels.js`; `files` 增加 `"bin/"`(否则 npm publish 不会把 bin 打入包)
+
+### 性能整改 (P1)
+- **`session.deriveCompacted` / `eventsByDay` 增量/版本缓存**: 每轮/每工具轮都要调用的两条路径从「每次 O(T) 全量扫描」降为「O(Δ) 追加 + 版本失效」。deriveCompacted 用"数组引用标识"做增量——数组没换只把尾部新 user/assistant 追加进结果, 命中 O(Δ); set/rename/fork/delete 换新数组或追加 compaction 时整体重算。eventsByDay 用版本门控的全库按天缓存(保持本地自然日语义, 与分片命名一致), 每轮兜底一次仍远优于每次全扫
+- **一轮对话只写一次磁盘**: `_pushTurn` 原先是 user 事件 + assistant 事件各触发一次同步落盘。新增 `append(..., { skipFlush })` + `flush(key)` 支持批量延后落盘, `_pushTurn` 用两条 skipFlush + 一次 flush, 单轮同步写从 2 次降为 1 次; 单条 append 缺省仍即时落盘(向后兼容, 不改写法)
+- **`deriveCompacted` 返回同一数组引用**: 命中缓存时返回缓存数组, 减少每次请求的分配与 GC
+
+### 可靠性 / 并发控制 (P1/P2)
+- **HTTP 通道并发护栏**: 新增 `MAX_INFLIGHT=4` 计数信号量, `/message` 与 `/message/stream` 超出同时处理数立即 429 (`Retry-After: 5`), 防多慢请求无限叠加占用单线程主 agent; 复用/释放走 `finally`, 异常不漏。
+- **Legion/DAG 并发上限**: `Legion` 新增 `maxConcurrent`(默认 8); `broadcast` 从一次性 `Promise.allSettled` 改为有界并发 `_mapBounded`; `dag.runDag` 支持 `{ concurrency }` 层内限流(缺省 0 = 不设限, 兼容旧调用), `Legion.runDag` 透传自身上限。防大 DAG/广播瞬间 spawn 海量子进程。
+- **`dispatch` 标注实验性**: 按角色分工 API 生产无内置消费方, 补充「实验性」注释与使用指引, 避免镀金面误导。
+
+### 响应质量 / DSML 适配 (P1/P2)
+- **接线 `buildDsmlPrompt`(修复从未注入缺口)**: `DSML` 原生文本模型可通过 http provider 显式 `dsml: true` 开启。开启时 `_context` 会把 DSML 工具协议注入 system prompt, 让这类模型能稳定输出 DSML 结构做工具调用; 默认所有 provider 不注入(零回归)。新增 provider 键 `dsml` + 校验(须布尔)。
+- **工具描述 token 预算**: `buildFencePrompt` / `buildDsmlPrompt` 对超长工具描述截断到 `MAX_TOOL_DESC_CHARS=240`(保留工具名 + `…`), 防超大/恶意描述在围栏/DSML 注入路径撑爆小上下文窗口 (围栏工具清单此前在预算之外)。
+
+### 一致性 / 死代码 (P1)
+- **`config/ppx.json` `proactive.enabled` 对齐 `false`**: 随包配置默认「主动任务生成」关(与 DEFAULT_CONFIG/文档一致, 兑现"默认关防打扰"), 不再默认开启打扰用户。
+- **删除 `remove_schedule` 死引用**: `enableReadonlyMode` 禁用列表引用了从未注册的工具, 属死代码。
+- **OpenClaw/API-key 报错文案统一**: 中英夹杂错误(`OpenClaw run status=` / `LLMClient: 缺少 API key`)改为 `[皮皮虾]` 前缀中文框架, 协议 token 保留括号说明。
+- **前端术语统一**: 设置页侧栏「插件」→「插件与能力」对齐页面头; `model` 页 `Provider ID` →「提供方 ID（Provider ID）」; **`web/README.md` 从 Next.js 英文样板翻新为中文项目说明**。
+
+### 新增测试
+- `test/session-cache.test.js`: deriveCompacted 增量缓存 / 数组替换重算 / compaction 重投影 / eventsByDay 缓存一致性 / skipFlush+flush 批量落盘 / 单条 append 兼容。
+- `test/dsml-prompt.test.js`: `buildDsmlPrompt` / `buildFencePrompt` 的工具协议输出、超长描述截断(保工具名)、协议转义防注入。
+- 追加 `test/dag.test.js`: `runDag` 层内并发限流 + 缺省不限流。
+- 追加 `test/providers-api.test.js`: provider `dsml` 键类型校验。
+
+### 验证
+- 4 个入口文件均无 BOM、首字节 `#!`、语法通过
+- `bin/ppx-serve` → `/health` 正常; `bin/ppx-channels list` 正常输出通道; `startServer` 消费者路径(导入→启动→健康检查→退出) exit 0
+- 注: 本测评环境沙箱禁止 `node --test` 子进程 spawn 管道捕获(EPERM), 无法完整跑测试套件; 已用单进程方式覆盖测试所消费的核心 `startServer` 路径, 本地 `npm test` 应全绿
+
 ## v1.1.0 (2026-08-17) — 第十轮评价整改: 配置键一致性 + 上下文溢出兜底 + 脚本数据隔离统一 + token 持久化 + 会话按天分片
 
 依据 EVALUATION-2026-08-17 (第十轮) 整改。这轮兑现第九轮报告第六节「下一轮候选」全部 6 项 (P1×3 + P2×3)。

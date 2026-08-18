@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 const TABS = [
   { href: "/settings/model", label: "模型" },
   { href: "/settings/general", label: "通用设置" },
-  { href: "/settings/plugins", label: "插件" },
+  { href: "/settings/plugins", label: "插件与能力" },
   { href: "/settings/presets", label: "智能体预设" },
 ];
 
