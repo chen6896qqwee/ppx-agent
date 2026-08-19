@@ -29,3 +29,5 @@ web/.next/
 
 .deps/
 *.log
+# 运行日志
+_web.*

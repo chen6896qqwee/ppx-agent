@@ -39,6 +39,13 @@ export function resolveAllLLMs(config) {
 
 export function resolveLLM(config) {
   const provs = (config && config.providers) || [];
+  // 测试/生产区分: 设 PPX_PROVIDER=<id> 可强制指定用哪个 provider (如测试用本地 lmstudio),
+  // 发布用户不设则保持默认 (云端优先按顺序回退)。
+  const forced = process.env.PPX_PROVIDER;
+  if (forced) {
+    const t = provs.find((x) => x.id === forced || x.id === String(forced).toLowerCase());
+    if (t) return new LLMClient(t);
+  }
   const p = provs.find(isUsableProvider);
   return p ? new LLMClient(p) : null;
 }
