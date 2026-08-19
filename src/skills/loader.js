@@ -1,4 +1,4 @@
-﻿// src/skills/loader.js - Skill Catalog + Loader
+// src/skills/loader.js - Skill Catalog + Loader
 // 参考 deepseek-harness 的 skill package(catalog + loader): 可枚举、可发现、可加载的技能注册表
 // 扫描 <skillsDir>/*/SKILL.md, 解析 frontmatter(name/description), 提供 list/get/loadAll
 import fs from "node:fs";
@@ -34,6 +34,9 @@ export function parseSections(md) {
 export class SkillLoader {
   constructor(skillsDir) {
     this.dir = skillsDir;
+    // 技能使用追踪 (source: Hermes "skill self-improves during use")
+    this.usageFile = path.join(skillsDir, ".usage.json");
+    this._usage = this._readUsage();
   }
 
   _scan() {
@@ -84,4 +87,30 @@ export class SkillLoader {
     const sections = parseSections(raw);
     return sections[section] ?? null;
   }
+
+  _readUsage() {
+    try { if (fs.existsSync(this.usageFile)) { const d = JSON.parse(fs.readFileSync(this.usageFile, "utf8")); if (d && typeof d === "object") return d; } } catch {}
+    return {};
+  }
+
+  _saveUsage() {
+    try { fs.writeFileSync(this.usageFile, JSON.stringify(this._usage, null, 2), "utf8"); } catch {}
+  }
+
+  // 记录一次技能使用 (load_skill 时调用)
+  trackUse(id) {
+    this._usage = this._readUsage();
+    const u = this._usage[id] || { uses: 0, lastUsed: null };
+    u.uses = (u.uses || 0) + 1;
+    u.lastUsed = new Date().toISOString();
+    this._usage[id] = u;
+    this._saveUsage();
+    return u;
+  }
+
+  // 某技能使用统计
+  useOf(id) { const u = this._readUsage()[id]; return u ? { uses: u.uses || 0, lastUsed: u.lastUsed || null } : { uses: 0, lastUsed: null }; }
+
+  // 全部技能使用统计
+  usageAll() { return this._readUsage(); }
 }

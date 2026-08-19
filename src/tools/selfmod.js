@@ -76,6 +76,8 @@ export function registerSelfmodTools(catalog, { skillsDir }) {
     execute: async (args) => {
       const content = loader.read(args.id);
       if (content === null) return capErr("load_skill", `未知技能: ${args.id}`);
+      
+      if (loader && typeof loader.trackUse === "function") { try { loader.trackUse(args.id); } catch {} }
       return `# ${args.id}\n\n${content}`;
     },
   });

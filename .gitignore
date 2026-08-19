@@ -35,3 +35,5 @@ _web.*
 # 密钥/凭据 - 严禁提交
 .npmrc
 .gh-token
+
+skills/.usage.json
