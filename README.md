@@ -51,6 +51,29 @@
 
 ## 🚀 快速开始
 
+### ⚠️ 首次使用：必须配置云端大模型 API
+
+皮皮虾**默认走云端大模型 API**（OpenAI 兼容协议）。首次运行前你必须配置 **至少一个** 云端 API key，否则无法对话。
+
+按需选一个厂商，把 key 设为环境变量（Windows 用 `setx`，Linux/macOS 用 `export`）：
+
+```bash
+# OpenAI / 任意 OpenAI 兼容端点
+setx OPENAI_API_KEY "sk-..."
+
+# 深度求索 DeepSeek
+setx DEEPSEEK_API_KEY "sk-..."
+
+# 火山方舟（需同时把 config/ppx.json 的 volcengine.model 改成你的 endpoint 模型名）
+setx VOLCENGINE_API_KEY "..."
+
+# 通义千问 DashScope（含 qwen-turbo 文本 + qwen-vl-max 视觉）
+setx DASHSCOPE_API_KEY "sk-..."
+```
+
+重开终端生效，然后直接 `ppx` 开聊。配置了哪个 key，就自动用对应云端模型（`providers` 按顺序回退）。
+
+> 本地模型（LM Studio）仅限开发/离线测试；**交付给用户请一律使用云端 API**。
 ### 全局安装 (npm)
 
 直接从 npm 安装，即可使用命令行工具：

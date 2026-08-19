@@ -15,25 +15,10 @@
   },
   "providers": [
     {
-      "id": "lmstudio",
-      "base_url": "http://127.0.0.1:1234/v1",
-      "api_key": "lm-studio",
-      "model": "gemma-4-e2b-uncensored-hauhaucs-aggressive-q8_k_p",
-      "vision": true,
-      "timeout_ms": 180000
-    },
-    {
       "id": "openai",
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
       "model": "gpt-4o-mini",
-      "timeout_ms": 180000
-    },
-    {
-      "id": "volcengine",
-      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "api_key_env": "VOLCENGINE_API_KEY",
-      "model": "REPLACE_WITH_YOUR_ENDPOINT",
       "timeout_ms": 180000
     },
     {
@@ -55,6 +40,21 @@
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "api_key_env": "DASHSCOPE_API_KEY",
       "model": "qwen-vl-max",
+      "vision": true,
+      "timeout_ms": 180000
+    },
+    {
+      "id": "volcengine",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "api_key_env": "VOLCENGINE_API_KEY",
+      "model": "REPLACE_WITH_YOUR_ENDPOINT",
+      "timeout_ms": 180000
+    },
+    {
+      "id": "lmstudio",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "api_key": "lm-studio",
+      "model": "gemma-4-e2b-uncensored-hauhaucs-aggressive-q8_k_p",
       "vision": true,
       "timeout_ms": 180000
     }
