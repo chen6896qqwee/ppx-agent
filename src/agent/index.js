@@ -20,6 +20,7 @@ import { Lifecycle } from "../ans/lifecycle.js";
 import { valuesPrompt } from "../ans/values.js";
 import { suggestProactive, markTaskDone } from "../ans/proactive.js";
 import { SkillLoader } from "../skills/loader.js";
+import { EvolutionEngine } from "../selfheal/evolve.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 // 阈值默认值 (可通过 config.agent.max_tool_rounds / tool_result_budget / max_tool_error_retry 覆盖)
@@ -156,6 +157,7 @@ export class PPXAgent {
     // 生命周期 (ANS 独立模块): born → growing → mature → evolving / reproducing
     // v1.0.7 持久化: 状态落盘 data/memory/lifecycle.json, 跨进程/重启不归零 (P1)
     this.lifecycle = new Lifecycle({ file: path.join(this.dataDir, "memory", "lifecycle.json") });
+    this.evolve = new EvolutionEngine(this, this.config.agent?.evolve || {});
     // 方法技能目录 (Superpowers 吸收): 供 _context 注入技能清单, LLM 按需 load_skill
     try { this.skills = new SkillLoader(path.join(root, "skills")); } catch { this.skills = null; }
 
@@ -570,6 +572,7 @@ export class PPXAgent {
     }
     // 生命周期推进: 每次对话计数, 阶段转换 born→growing→mature
     this._lifecycleTick();
+    this.evolve && this.evolve.tick();
     return reply;
   }
 
