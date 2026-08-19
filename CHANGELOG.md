@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## v1.2.0 (2026-08-19)
+- `src/memory/memory-ticker.js` + `src/memory/session.js`: 记忆滚动归档改用游标(lastRolledDay/lastRolledSeq), 只追加新事件, 修复同一段对话在 longterm 反复出现导致重复回话的问题。
+- `src/tools/advanced.js`: HTTP fetch 重定向改 SSRF 安全模式(redirect:manual 逐跳校验公网地址), 堵住 "302→内网/云元数据" 绕过。
+- 修复 `release_body_payload.json` v1.1.1 发布负载中文被 GBK 读坏(UTF-8 乱码), 用 `release_v1.1.1_body.md` 重建。
 ## v1.1.1 (2026-08-18) — bin 入口可执行性修复 + 性能/可靠性/一致性全面整改
 
 v1.1.0 首次 npm 发布后暴露一个入口缺陷: `ppx-serve` 指向的 `src/server.js` 首行是 **UTF-8 BOM 且无 shebang**。npm 全局安装后 `ppx-serve` 被 symlink 到该文件, shell 无 shebang 会按默认 sh 解析, 遇到 JS 语法直接报错; 即便补 shebang, 前置 BOM 也会让内核把它当普通文本导致 shebang 仍失效。本版修复根因并重构为更稳的 bin 包装层。在此基础上, 依据对 v1.1.1 源码的全面评价(六维取证), 本轮同步落地一批性能/可靠性/一致性的代码整改。
