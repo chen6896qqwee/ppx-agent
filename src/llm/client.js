@@ -130,7 +130,10 @@ export class LLMClient {
       return { content: r.content, usage: r.usage };
     }
     const data = await this._request("/chat/completions", { model: this.model, messages, temperature, max_tokens: maxTokens }, { timeoutMs, retryMax });
-    const content = data?.choices?.[0]?.message?.content;
+    const m1 = data?.choices?.[0]?.message;
+    let content = m1?.content;
+    // 本地推理模型兜底: thinking 吃满 token 时 content 为空, 用 reasoning_content 降级, 避免误判"断线/失败"并写入污染记忆
+    if (!content && m1?.reasoning_content) content = "[思考] " + m1.reasoning_content;
     if (!content) throw new Error("LLM 返回空内容");
     return { content, usage: data?.usage };
   }
@@ -157,6 +160,11 @@ export class LLMClient {
     if (!message) throw new Error("LLM 返回空 message");
     let toolCalls = message.tool_calls || null;
     let content = message.content || null;
+    // 本地推理模型兜底: 无正文且无工具调用时, 用 reasoning_content 降级(避免误判断线/失败并写入污染记忆)
+    if (!content && !toolCalls?.length && message.reasoning_content) {
+      content = "[思考] " + message.reasoning_content;
+      toolCalls = null;
+    }
     // 纯文本工具调用修复 (吸收 OpenClaw tool-call-repair):
     // 部分模型(本地/DSML)返回文本工具意图而非原生 tool_calls, 从文本恢复
     if (tools.length && (!toolCalls || !toolCalls.length) && typeof content === "string" && content) {
