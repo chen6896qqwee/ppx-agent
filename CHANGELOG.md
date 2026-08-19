@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## v1.4.0-dev (2026-08-19) - Harness 强化: Auditor 独立验证 + held-out 回归 + 探索熔断
+> 基于 AI-Agent 架构 7篇研究 (LongHorizon MEA / Self-Harness / Meta-Harness): 不信任模型自评, 只有独立验证通过的事实才写回持久状态。
+
+- P0① Auditor 独立验证 + 已验证账本 ( 新增 src/audit/verifier.js ):
+  - verifyLesson: 经验必须通过确定性闸门才写回经验库 (接地防幻觉 / 可操作动词 / 单句精炼), 拆掉 refine() 模型自评裸写的反模式。
+  - Auditor.gate: "唯一已验证写回"通道, 账本持久到 data/audit/verified.json (含 reject 审计)。
+- P0② held-out 回归闸门: refineSkill 样本够多时切出未见过的 held-out 子集, 要求接地工具在那里也有背书, 防过拟合训练集 (对应 Self-Harness "helled-out 无退化才合并")。
+- P0③ 探索熔断 + 重复命令检测 (_llmWithTools): 连续 3 轮只有只读/查询无产出 -> 注入方向盘停止探测转交付; 同工具+同参数命中 2次 -> 警告重复。 config.agent.explore_break_limit / repeat_flag_limit 可调。
+- 修复 verifyUpgradeSkill: 原 regex 无效 + 不剥 frontmatter -> 升级带 ---meta--- 的技能会误判"缩水"; 现先剥 frontmatter 再比正文, "缩水"检查真正生效。
+- 新增 test/audit.test.js (14例) + test/circuit-breaker.test.js (3例)。
+- 非网络全量 442 pass / 0 fail (+3 skipped); 网络类测试 (mcp/channels/wechat/ocr) 在 CI 本就挂起, 与本次无关。
+
+
 ## v1.3.1-dev (2026-08-19) — P2整改: context_window按模型预设 + 主动提醒温和通电
 - **context_window 按模型预设**: openai=128k, deepseek=64k, qwen-turbo=131k, qwen-vl=32k, zhipu/glm-5v=64k; volcengine/lmstudio(本地)保持 8192 保守默认。长对话不再被过早压缩, 改善连贯性。
 - **主动提醒温和通电**: proactive 默认 enabled=true(1h扫描), 无待办信号返回 null 不打扰 + 24h去重 + 过期检测(昨天/上周/已过日期)兜底。护城河特性默认可见。
@@ -342,7 +355,7 @@ v1.1.0 首次 npm 发布后暴露一个入口缺陷: `ppx-serve` 指向的 `src/
 
 ### 分发准备
 - **npm 发布字段**：bin（`ppx`/`ppx-serve`）、repository、author、exports
-- **去本机硬编码**：`C:/Users/chen/...` 路径清零，改环境变量 `PPX_OPENCLAW_MJS`/`PPX_DSH_ROOT`
+- **去本机硬编码**：`C:/Users/<user>/...` 路径清零，改环境变量 `PPX_OPENCLAW_MJS`/`PPX_DSH_ROOT`
 - **Node 版本放宽**：`>=22.22.3(排除23/24.0-24.14)` → `>=20`（openclaw 后端运行时检测降级）
 - **数据目录外置**：`PPX_DATA_DIR` 环境变量 + node_modules 包自动外置 `~/.ppx`
 
@@ -600,7 +613,7 @@ v1.1.0 首次 npm 发布后暴露一个入口缺陷: `ppx-serve` 指向的 `src/
 - **`config/ppx.json`**: 新增 `dsh` provider (dsh_root 指向桌面源码)
 
 ### dsh 源码落地
-- `C:\Users\chen\Desktop\deepseek-harness` (master, 7441 文件)
+- `./deepseek-harness` (master, 7441 文件)
 - 已 `pnpm install` + `pnpm run build:lib:host`（headless 不需 web 前端）
 - 跑通: `dsh --profile headless` 全链路 14s 返回 (DEEPSEEK_API_KEY)
 

@@ -1,16 +1,28 @@
 // scripts/openclaw-smoke.js - OpenClaw 底座连通性 + 工具调用(围栏代理)测试
 // 需用满足 OpenClaw 要求的 Node 运行: node >=22.22.3 / >=24.15 / >=25.9 (推荐 26.x)
 // 用法: "C:/Program Files/nodejs/node.exe" scripts/openclaw-smoke.js
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 import { LLMClient, nodeVersionOk } from "../src/llm/client.js";
 import { buildFencePrompt, parseToolFence } from "../src/llm/fence.js";
 
 const NODE = process.versions.node;
 console.log(`→ Node v${NODE} | nodeVersionOk=${nodeVersionOk(NODE)}`);
 
+function globalOpenclawMjs() {
+  try {
+    const cmd = process.platform === "win32" ? ["/c", "npm root -g"] : ["-c", "npm root -g"];
+    const shell = process.platform === "win32" ? process.env.ComSpec || "cmd" : "sh";
+    const root = execFileSync(shell, cmd, { encoding: "utf8" }).trim();
+    return path.join(root, "openclaw", "openclaw.mjs");
+  } catch { return undefined; }
+}
+const MJS = process.env.PPX_OPENCLAW_MJS || globalOpenclawMjs();
+
 const client = new LLMClient({
   id: "openclaw",
   backend: "openclaw",
-  mjs: "C:/Users/chen/AppData/Roaming/npm/node_modules/openclaw/openclaw.mjs",
+  mjs: MJS,
   session_key: "ppx:smoke",
   timeout_ms: 120000,
 });

@@ -15,6 +15,7 @@ import { builtinPlugins, resolveLLM, resolveAllLLMs } from "../plugin/builtin.js
 import { registerMcpTools } from "../mcp/index.js";
 import { buildCompactionMessages, transcriptToText } from "../memory/compaction.js";
 import { buildDsmlPrompt } from "../llm/dsml.js";
+import { Auditor, verifyLesson, heldOutSplit } from "../audit/verifier.js";
 // ANS 独立模块 (可更换): 价值对齐 / 自主任务生成 / 生命周期
 import { Lifecycle } from "../ans/lifecycle.js";
 import { valuesPrompt } from "../ans/values.js";
@@ -38,7 +39,16 @@ const AUX_LLM_TIMEOUT_MS = 10000;
 // 「历史 token 预算硬上限」, 且提供不依赖 LLM 的硬裁剪兜底 + 溢出检测降档重试。
 const DEFAULT_CONTEXT_WINDOW = 8192; // 未知窗口时的保守默认 (绝不放大历史)
 const DEFAULT_CONTEXT_RATIO = 0.6;   // 历史+工具结果占用窗口的安全比例上限
-const DEFAULT_OVERFLOW_SHRINK_MAX = 2; // 溢出时最多再降档裁剪重试几次
+const DEFAULT_OVERFLOW_SHRINK_MAX = 2;
+
+// P0③ harness 融断: 探索连击 / 重复命令 阈值 (config.agent.explore_break_limit / repeat_flag_limit 可调)
+const DEFAULT_EXPLORE_BREAK = 3;   // 连续 3 轮只有只读/查询无产出 -> 融断
+const DEFAULT_REPEAT_FLAG = 2;     // 同一工具+args 命中 2 次 -> 警告重复
+// 探索类工具集 (read-only/发现; 不算“产出或修改”)
+const EXPLORE_TOOLS = new Set([
+  "read_file", "list_dir", "web_search", "fetch_page", "memory_search", "read_document",
+  "get_time", "read_image", "ocr_image", "list_schedules", "list_capabilities", "replay_session",
+]); // 溢出时最多再降档裁剪重试几次
 
 // 判断是否为「上下文溢出」错误 (常见信号: 消息含 context/length/token/window, 或 HTTP 400/413)
 // 注意: AbortError(用户取消/内部超时中止) 一律不算溢出, 沿用 retry.js 不重试约定。
@@ -159,6 +169,8 @@ export class PPXAgent {
     // v1.0.7 持久化: 状态落盘 data/memory/lifecycle.json, 跨进程/重启不归零 (P1)
     this.lifecycle = new Lifecycle({ file: path.join(this.dataDir, "memory", "lifecycle.json") });
     this.evolve = new EvolutionEngine(this, this.config.agent?.evolve || {});
+    // Auditor (P0①): 唯一“已验证写回”通道 + 已验证账本 (data/audit/verified.json)
+    this.auditor = new Auditor({ ledgerPath: path.join(this.dataDir, "audit", "verified.json") });
     // 方法技能目录 (Superpowers 吸收): 供 _context 注入技能清单, LLM 按需 load_skill
     try { this.skills = new SkillLoader(path.join(root, "skills")); } catch { this.skills = null; }
 
@@ -704,7 +716,12 @@ export class PPXAgent {
     const maxRounds = Number(this.config.agent?.max_tool_rounds) || DEFAULT_MAX_TOOL_ROUNDS;
     const resultBudget = Number(this.config.agent?.tool_result_budget) || DEFAULT_TOOL_RESULT_BUDGET;
     const maxErrorRetry = Number(this.config.agent?.max_tool_error_retry) || DEFAULT_MAX_TOOL_ERROR_RETRY;
+    const exploreBreak = Number(this.config.agent?.explore_break_limit) || DEFAULT_EXPLORE_BREAK;
+    const repeatFlag = Number(this.config.agent?.repeat_flag_limit) || DEFAULT_REPEAT_FLAG;
     let errorRetries = 0;
+    // P0③ 融断状态 (每轮 agent 内): 探索连击 / 重复命令 计数器
+    let exploreStreak = 0;
+    const seenSig = new Map();
     // 上下文溢出降档: 溢出时裁剪历史后重发, 最多 DEFAULT_OVERFLOW_SHRINK_MAX 档 (第九轮 review P1)
     let overflowShrinks = 0;
 
@@ -755,6 +772,39 @@ export class PPXAgent {
           content: "以下工具调用失败, 请修正参数或改用其他方式后重试:\n" + errors.join("\n"),
         });
         continue;
+      }
+      // P0③ harness 融断: 探索循环 / 重复命令 (无产出的自转) → 注入方向盘给模型
+      const _called = toolCalls.filter((tc) => tc.type === "function" && tc.function);
+      if (_called.length) {
+        let _allExplore = true;
+        for (const tc of _called) {
+          if (!EXPLORE_TOOLS.has(tc.function?.name || "")) { _allExplore = false; break; }
+        }
+        let _repeatHit = false;
+        for (const tc of _called) {
+          let _a = {};
+          try { _a = JSON.parse(tc.function.arguments || "{}"); } catch {}
+          const _sig = (tc.function?.name || "") + "::" + JSON.stringify(_a).slice(0, 120);
+          seenSig.set(_sig, (seenSig.get(_sig) || 0) + 1);
+          if (seenSig.get(_sig) >= repeatFlag) _repeatHit = true;
+        }
+        if (_allExplore) exploreStreak++; else exploreStreak = 0;
+        if (_repeatHit) { exploreStreak = 0; seenSig.clear(); }
+        if (_allExplore && exploreStreak >= exploreBreak) {
+          exploreStreak = 0; seenSig.clear();
+          messages.push({
+            role: "user",
+            content: "检测到连续探索循环: 连续 " + exploreBreak + " 轮只有只读/查询工具, 未产生任何产出或修改。请停止继续探测, 基于已获得的信息直接给出结论或交付物; 若确实缺少关键信息, 明确说明并结束本轮, 不要空转。",
+          });
+          continue;
+        }
+        if (_repeatHit) {
+          messages.push({
+            role: "user",
+            content: "检测到重复执行相同工具与参数。请不要再重复该调用, 换一条不同路径推进, 或直接基于现有信息产出结论。",
+          });
+          continue;
+        }
       }
     }
     return "[皮皮虾] 工具调用轮次过多, 已停止。";
@@ -811,6 +861,15 @@ export class PPXAgent {
 
   // 离线工具路由已并入 _localIntent (超集), 不再单独保留
 
+  // 工具名清单 (给 verifyLesson 做幻觉接地)
+  _toolNames() {
+    try {
+      if (this.tools && typeof this.tools.listDetailed === "function") return this.tools.listDetailed().map((t) => t.name);
+      if (this.tools && typeof this.tools.names === "function") return this.tools.names();
+    } catch {}
+    return [];
+  }
+
   _learnFromTurn(userMsg, reply) {
     const m = String(userMsg).match(/经验交给皮皮虾[:：]\s*(.+)/i);
     if (m) {
@@ -838,8 +897,22 @@ export class PPXAgent {
       lesson = String(r.content || "").trim();
     } catch { lesson = ""; }
     if (!lesson) return { distilled: 0, reason: "LLM 未产出经验" };
-    this.experience.learn({ task: "自动提炼", lesson, tags: ["auto-refine"] });
-    if (this.lifecycle) this.lifecycle.evolve(); // 生命周期: 进化计数 (落盘)
+    // P0① Auditor: 经验必须过确定性验证闸门才写回经验库 (不信任模型自评)
+    //   接地防幻觉(点名工具须有失败轨迹背书) + 可操作动词 + 单句精炼
+    const knownTools = this._toolNames();
+    const g = await this.auditor.gate(
+      "lesson",
+      { lesson, failedTraces: failed, knownTools },
+      verifyLesson,
+      (p) => {
+        this.experience.learn({ task: "自动提炼", lesson: p.lesson, tags: ["auto-refine"] });
+        if (this.lifecycle) this.lifecycle.evolve(); // 生命周期: 进化计数 (落盘)
+      }
+    );
+    if (!g.committed) {
+      warn(`[refine] 经验被验证闸门拒绝 (${g.reason}): ${lesson.slice(0, 80)}`);
+      return { distilled: 0, rejected: true, reason: g.reason, lesson };
+    }
     info(`[refine] 学到经验: ${lesson}`);
     return { distilled: 1, lesson };
   }
@@ -875,7 +948,16 @@ export class PPXAgent {
 
     // self-evolution "reliable verification": gate before persist (no LLM)
     //   -> structure (## Process + ## Verify) + grounded (content references hot tool, trace-backed)
-    const v = verifySkill({ name, content: String(skill.content || ""), hotTools: hot, okTraces: ok, minFreq });
+    // P0② held-out 回归: 样本够多时切出未见过的 held-out 子集, 要求接地工具在那也有背书, 防过拟合
+    const { heldOut } = heldOutSplit(ok, { ratio: 0.4, minTotal: 6 });
+    const v = verifySkill({
+      name,
+      content: String(skill.content || ""),
+      hotTools: hot,
+      okTraces: ok,
+      minFreq,
+      heldOutTraces: heldOut.length ? heldOut : undefined,
+    });
     if (!v.ok) {
       warn("[refineSkill] skill rejected by verify gate: " + name + " - " + v.reason);
       return { created: 0, reason: v.reason, rejected: true, name };
@@ -886,6 +968,7 @@ export class PPXAgent {
       content: String(skill.content),
     }, { agent: this });
     if (res.startsWith(TOOL_ERROR_PREFIX)) return { created: 0, reason: res };
+    if (this.auditor) this.auditor.record("skill_created", { lesson: `创建技能 ${name}` }); // 已过 verifySkill 闸门, 只记账
     info(`[refineSkill] 生成技能: ${name}`);
     return { created: 1, name };
   }

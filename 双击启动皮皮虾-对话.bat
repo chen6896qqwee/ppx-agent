@@ -4,7 +4,7 @@ cd /d "%~dp0"
 set PPX_PROVIDER=lmstudio
 title PPX CLI Chat (local lmstudio)
 echo.
-echo  [PPX] starting ??? CLI  (local model lmstudio)
+echo  [PPX] starting PPX CLI  (local model lmstudio)
 echo  [PPX] type your message, Ctrl+C to exit
 echo.
 node src/cli.js

@@ -9,8 +9,10 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tag = process.argv[2];
 if (!tag) { console.error("用法: node scripts/gh-release.mjs <tag> [body_file]"); process.exit(1); }
-const token = process.env.GH_TOKEN;
-if (!token) { console.error("缺 GH_TOKEN 环境变量(网页 PAT)"); process.exit(1); }
+const token = process.env.GH_TOKEN || process.env.PPX_GHT || (() => {
+  try { const t = fs.readFileSync(path.join(ROOT, '.gh-token'), 'utf8').trim(); return t || null; } catch { return null; }
+})();
+if (!token) { console.error("缺 token: 设 GH_TOKEN/PPX_GHT 环境变量, 或写 .gh-token 文件"); process.exit(1); }
 
 const bodyFile = process.argv[3] || path.join(ROOT, `release_${tag.replace(/^v/, "")}_body.md`);
 const body = fs.existsSync(bodyFile)
