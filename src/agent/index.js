@@ -21,6 +21,7 @@ import { valuesPrompt } from "../ans/values.js";
 import { suggestProactive, markTaskDone } from "../ans/proactive.js";
 import { SkillLoader } from "../skills/loader.js";
 import { EvolutionEngine } from "../selfheal/evolve.js";
+import { verifySkill } from "../skills/verify.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 // 阈值默认值 (可通过 config.agent.max_tool_rounds / tool_result_budget / max_tool_error_retry 覆盖)
@@ -871,6 +872,14 @@ export class PPXAgent {
     if (!skill || !skill.content) return { created: 0, reason: "Skill 字段缺失" };
     // name 归一化: 仅字母/数字/横线, 非法字符剔除, 空则兜底
     const name = String(skill.name || "").replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || ("auto-" + Date.now().toString(36));
+
+    // self-evolution "reliable verification": gate before persist (no LLM)
+    //   -> structure (## Process + ## Verify) + grounded (content references hot tool, trace-backed)
+    const v = verifySkill({ name, content: String(skill.content || ""), hotTools: hot, okTraces: ok, minFreq });
+    if (!v.ok) {
+      warn("[refineSkill] skill rejected by verify gate: " + name + " - " + v.reason);
+      return { created: 0, reason: v.reason, rejected: true, name };
+    }
     const res = await this.tools.call("create_skill", {
       name,
       description: String(skill.description || "自动提炼的技能"),

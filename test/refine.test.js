@@ -46,7 +46,7 @@ test("refine: 无 LLM 跳过", async () => {
 
 test("refineSkill: 高频成功工具 → 提炼并落盘 SKILL.md", async () => {
   const a = makeAgent();
-  a.llm = { chat: async () => ({ content: '{"name":"file-reader","description":"批量读文件","content":"## 流程\\n1. 读文件\\n\\n## 验证\\n输出内容"}' }) };
+  a.llm = { chat: async () => ({ content: '{"name":"file-reader","description":"批量读文件","content":"## 流程\\n1. 确认目标文件路径存在\\n2. 调用 read_file 读取内容\\n3. 检查返回是否为空, 空则报路径错误\\n## 反合理化\\n路径不存在却说为空 = 偷懒\\n## 验证\\n输出读取的文件完整内容"}' }) };
   a.traces.read = () => [
     { ok: true, tool: "read_file", result: "a" },
     { ok: true, tool: "read_file", result: "b" },
