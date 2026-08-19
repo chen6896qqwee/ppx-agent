@@ -113,4 +113,10 @@ export class SkillLoader {
 
   // 全部技能使用统计
   usageAll() { return this._readUsage(); }
+
+  // 重置某技能使用计数 (用中自进化升级完成后调用, 防连跑)
+  resetUse(id) {
+    this._usage = this._readUsage();
+    if (this._usage[id]) { this._usage[id].uses = 0; this._usage[id].lastUpgraded = new Date().toISOString(); this._saveUsage(); }
+  }
 }

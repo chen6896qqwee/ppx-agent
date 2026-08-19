@@ -13,6 +13,7 @@ export class EvolutionEngine {
     this.enabled = config.enabled !== false;
     this.everyCalls = Number(config.every_calls) || 20;       // 每 N 次工具调用触发一次提炼
     this.minIntervalMs = Number(config.min_interval_ms) || 30000; // 两次提炼最小间隔
+    this.upgradeUses = Number(config.upgrade_uses) || 3;      // 技能用满 N 次自动升级 (用中自进化)
     this._calls = 0;
     this._lastAt = 0;
   }
@@ -46,6 +47,19 @@ export class EvolutionEngine {
       if (okCalls.length >= 3) {
         const r = await a.refineSkill({ limit: 50, minFreq: 2 });
         if (r && r.created > 0) info(`[evolve] 成功→技能: ${r.name}`);
+      }
+      // 用中自进化: 扫描高频技能 (uses >= upgradeUses) 触发升级
+      if (typeof a.upgradeSkill === "function" && a.skills && typeof a.skills.usageAll === "function") {
+        try {
+          const usage = a.skills.usageAll() || {};
+          const ripe = Object.entries(usage).filter(([, u]) => (u && (u.uses || 0)) >= this.upgradeUses);
+          for (const [sid] of ripe) {
+            const r = await a.upgradeSkill(sid, { minUses: this.upgradeUses });
+            if (r && r.upgraded > 0) info(`[evolve] 用中升级技能: ${r.name}`);
+          }
+        } catch (e) {
+          warn(`[evolve] 技能升级失败: ${String(e?.message || e).slice(0, 120)}`);
+        }
       }
     } catch (e) {
       warn(`[evolve] 提炼失败 (不影响当前对话): ${String(e?.message || e).slice(0, 160)}`);

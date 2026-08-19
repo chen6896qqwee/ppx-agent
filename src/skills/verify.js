@@ -63,3 +63,22 @@ export function verifySkill({ name, content, hotTools, okTraces, minFreq = 2 } =
   }
   return { ok: true, matchedTool: g.matchedTool, traceCount: tb.count };
 }
+
+// 技能升级专用验收 (用中自进化): 不重新做 grounding (创建时已接地验证),
+// 重点防止退化: 缺段落 / 正文缩水 / 变空。返回 { ok, reason, changed }
+export function verifyUpgradeSkill({ content, prevContent }) {
+  const c = String(content || "");
+  const p = String(prevContent || "");
+  // 1. 结构验收 (必须仍含 流程+验证)
+  const s = requiredSections(c);
+  if (!s.ok) return { ok: false, reason: "升级版缺必需段落: " + s.missing.join(", ") };
+  // 2. 正文不缩水 (去段落标题后比旧版短 = 退化)
+  const bodyNow = c.replace(/##s*S+/g, "").trim();
+  const bodyPrev = p.replace(/##s*S+/g, "").trim();
+  if (bodyNow.length < 20) return { ok: false, reason: "升级版内容太短" };
+  if (bodyPrev.length && bodyNow.length < bodyPrev.length * 0.6) {
+    return { ok: false, reason: "升级版正文缩水 (" + bodyNow.length + "<" + Math.ceil(bodyPrev.length*0.6) + "), 疑似退化" };
+  }
+  const changed = bodyNow !== bodyPrev;
+  return { ok: true, changed };  
+}

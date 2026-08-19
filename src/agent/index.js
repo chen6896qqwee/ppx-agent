@@ -21,7 +21,7 @@ import { valuesPrompt } from "../ans/values.js";
 import { suggestProactive, markTaskDone } from "../ans/proactive.js";
 import { SkillLoader } from "../skills/loader.js";
 import { EvolutionEngine } from "../selfheal/evolve.js";
-import { verifySkill } from "../skills/verify.js";
+import { verifySkill, verifyUpgradeSkill } from "../skills/verify.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 // 阈值默认值 (可通过 config.agent.max_tool_rounds / tool_result_budget / max_tool_error_retry 覆盖)
@@ -890,8 +890,49 @@ export class PPXAgent {
     return { created: 1, name };
   }
 
+  // 用中自进化 (source: Hermes "skill self-improves during use"):
+  // 技能用满 minUses 次后, 读它当前内容 + 相关成功轨迹,
+  // 让 LLM 改进 SKILL.md, 过 verifyUpgradeSkill 闸门(防退化) 后写回, 重置计数防连跑。
+  async upgradeSkill(id, { minUses = 3, limit = 40 } = {}) {
+    try {
+      if (!this.llm) return { upgraded: 0, reason: "无 LLM" };
+      if (!this.skills || typeof this.skills.read !== "function") return { upgraded: 0, reason: "无 skills加载器" };
+      const need = this.skills.get(id);
+      if (!need) return { upgraded: 0, reason: "未知技能: " + id };
+      const used = this.skills.useOf ? this.skills.useOf(id) : { uses: 0 };
+      if ((used.uses || 0) < minUses) return { upgraded: 0, reason: "使用不足", uses: used.uses, need: minUses, name: id };
+      const prev = this.skills.read(id);
+      if (prev === null) return { upgraded: 0, reason: "读取失败", name: id };
+      const ok = this.traces && typeof this.traces.read === "function" ? this.traces.read(undefined, limit).filter((t) => t.ok) : [];
+      const sample = ok.slice(-15).map((t) => "工具 " + t.tool + ": " + String(t.result || "").slice(0, 120)).join("\n");
+      let upgraded;
+      try {
+        const r = await this.llm.chat([
+          { role: "system", content: "你是技能升级器。下面是一个已存在的技能全文 + 最近的成功工具轨迹。你的任务: 基于这些实际经验改进这个技能, 补充它的“## 流程”工作步骤/检查点和“## 反合理化”建议, 切勿删除“## 验证”段。只输出改进后的 SKILL.md 正文 (frontmatter 不用重复), 不要解释。" },
+          { role: "user", content: "当前技能 (保留效果, 改进不足):\n\n" + String(prev).slice(0, 3000) + "\n\n最近成功轨迹:\n" + String(sample).slice(0, 2000) },
+        ], { timeoutMs: AUX_LLM_TIMEOUT_MS, retryMax: 0 });
+        upgraded = String(r.content || "").trim().replace(/```(?:md|markdown)?\s*/g, "").replace(/```/g, "").trim();
+      } catch {
+        return { upgraded: 0, reason: "LLM 升级失败", name: id };
+      }
+      if (!upgraded) return { upgraded: 0, reason: "空升级结果", name: id };
+      const v = verifyUpgradeSkill({ content: upgraded, prevContent: prev });
+      if (!v.ok) {
+        warn("[upgradeSkill] 被升级闸门拦截: " + id + " - " + v.reason);
+        return { upgraded: 0, reason: v.reason, rejected: true, name: id };
+      }
+      const w = await this.tools.call("create_skill", { name: id, description: (need.description || ""), content: upgraded }, { agent: this });
+      if (typeof w === "string" && w.startsWith(TOOL_ERROR_PREFIX)) return { upgraded: 0, reason: w, name: id };
+      if (this.skills.resetUse) this.skills.resetUse(id);
+      info("[upgradeSkill] 升级技能: " + id + " (uses=" + used.uses + ")");
+      return { upgraded: 1, name: id, changed: v.changed, uses: used.uses };
+    } catch (e) {
+      warn("[upgradeSkill] 失败: " + String(e?.message || e).slice(0, 120));
+      return { upgraded: 0, reason: String(e?.message || e).slice(0, 120), name: id };
+    }
+  }
 
-  // 把新记忆归档进 L2 场景
+  // 拊新记忆归档进 L2 场景
   _archiveScenes() {
     const recent = this.facts.query("", { limit: 5 });
     for (const f of recent) {
