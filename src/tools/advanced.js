@@ -1,4 +1,4 @@
-﻿// src/tools/advanced.js - 进阶工具集 (搜索 / HTTP / 定时任务)
+// src/tools/advanced.js - 进阶工具集 (搜索 / HTTP / 定时任务)
 // 全部零依赖: 用 Node 原生 fetch + timers
 import fs from "node:fs";
 import net from "node:net";
@@ -122,15 +122,41 @@ async function assertPublicUrl(url) {
   }
 }
 
+// 带 SSRF 校验的安全 fetch: 手动跟随重定向, 并对每一跳(含首发)都做 assertPublicUrl 校验。
+// fetch 默认 redirect:"follow" 会在每次跳转时重新解析 DNS —— 攻击者用一个公网 URL 302→内网
+// (如 http://127.0.0.1:x 或 http://169.254.169.254/)即可绕过单次 assertPublicUrl。
+// 这里改用 redirect:"manual" 逐跳校验后再继续, 堵住"302 到内网/云元数据"的绕过。
+async function _fetchWithSsrSafe(url, { method = "GET", headers = {}, body, signal, maxRedirects = 5 } = {}) {
+  let current = url;
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    await assertPublicUrl(current);
+    const resp = await fetch(current, {
+      method,
+      headers,
+      body: body !== undefined ? (typeof body === "string" ? body : JSON.stringify(body)) : undefined,
+      redirect: "manual",
+      signal,
+    });
+    if (resp.status >= 300 && resp.status < 400 && resp.headers.has("location")) {
+      const loc = resp.headers.get("location");
+      current = new URL(loc, current).toString(); // 相对 Location 基于 current 解析成绝对 URL
+      method = "GET"; // 重定向后不再携带 body, 并退回 GET (302/303 语义)
+      body = undefined;
+      continue;
+    }
+    return resp;
+  }
+  throw new Error("SSRF 拒绝: 重定向次数超过 " + maxRedirects);
+}
+
 async function httpRequest({ url, method = "GET", headers = {}, body = null, timeout = 15000 }) {
-  await assertPublicUrl(url);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeout);
   try {
-    const resp = await fetch(url, {
+    const resp = await _fetchWithSsrSafe(url, {
       method,
       headers: { "User-Agent": "PPX-Agent/0.2", ...headers },
-      body: body ? (typeof body === "string" ? body : JSON.stringify(body)) : undefined,
+      body,
       signal: ctrl.signal,
     });
     const text = await resp.text();

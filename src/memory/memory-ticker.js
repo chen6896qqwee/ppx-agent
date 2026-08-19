@@ -101,13 +101,32 @@ ${lines.join("\n")}\n`);
   // P1#9: 注入 LLM 结构化提炼器 (agent 调 setExtractor)
   setExtractor(fn) { this.extractor = typeof fn === "function" ? fn : null; }
 
-  // 每 N 轮: 把今日事件滚动归档进 longterm (从 session 派生)
+  // 每 N 轮: 把今日新增事件滚动归档进 longterm (从 session 派生)
+  // v1.2.0 fix: 用游标(lastRolledDay/lastRolledSeq)只追加"本次滚动之后"的新事件,
+  // 不再每次把今日全文重复追加 —— 否则同一段对话会在 longterm 中反复出现, 加剧重复回话。
   _compileDaily_Rolling() {
-    const lines = _renderLines(this.sessionStore, logicalDay());
-    if (!lines.length) return;
-    let longterm = readText(this.longtermMd) || "";
-    longterm += `\n## ${logicalDay()} (滚动)\n${lines.slice(-20).join("\n")}\n`;
-    writeText(this.longtermMd, longterm);
+    const today = logicalDay();
+    const st = this.state;
+    if (st.lastRolledDay !== today) { st.lastRolledDay = today; st.lastRolledSeq = 0; } // 跨天重置游标
+    const afterSeq = st.lastRolledSeq || 0;
+    const rows = [];
+    let maxSeq = afterSeq;
+    const dayEvents = this.sessionStore && typeof this.sessionStore.replayDay === "function"
+      ? this.sessionStore.replayDay(today)
+      : [];
+    for (const e of dayEvents) {
+      if (e.seq <= afterSeq) continue;
+      const who = e.type === "user/message" ? "用户" : "皮皮虾";
+      rows.push(`- [${new Date(e.ts).toISOString()}] ${who}: ${String(e.data?.content || "").slice(0, 200)}`);
+      if (e.seq > maxSeq) maxSeq = e.seq;
+    }
+    if (rows.length) {
+      let longterm = readText(this.longtermMd) || "";
+      longterm += `\n## ${today} (滚动)\n${rows.join("\n")}\n`;
+      writeText(this.longtermMd, longterm);
+    }
+    st.lastRolledSeq = maxSeq;
+    this._saveState();
   }
 
   // 滚动压缩: 今日事件超量时, 把最旧对话聚合压缩进 longterm, 只留近期
@@ -143,15 +162,21 @@ ${lines.join("\n")}\n`);
   }
 
   context(userMsg) {
-    const today = _renderLines(this.sessionStore, logicalDay()).join("\n");
-    const longterm = (readText(this.longtermMd) || "").slice(-3000);
+    const todayCount = this.sessionStore ? _renderLines(this.sessionStore, logicalDay()).length : 0;
+    const rawLongterm = readText(this.longtermMd) || "";
+    const longterm = _longtermExcludingToday(rawLongterm, logicalDay()).slice(-3000);
     const topFacts = this.factsTop(userMsg);
+    // v1.2.0 fix: 今日对话原文由会话历史(history)承载, 不再逐行重复注入到 system,
+    // 避免模型在 system 的"今日记忆"里看到与 history 相同的对话而重复回话。
+    const todayNote = todayCount
+      ? `今日已进行 ${todayCount} 轮对话（完整内容已随会话历史提供）。`
+      : "今日暂无对话。";
     return `
-# 今日记忆
-${today || "(今日暂无对话)"}
+# 今日对话
+${todayNote}
 
 # 长期记忆 (最近)
-${longterm}
+${longterm || "(暂无)"}
 
 # 关键事实
 ${topFacts || "(暂无)"}
@@ -187,6 +212,20 @@ ${topFacts || "(暂无)"}
     };
   }
 }
+
+// 读取长期记忆, 并剔除"今天"的段落 —— 当日对话已由会话历史(history)承载,
+// 若 longterm 里今天滚动块也注入, 会与 history 重复, 是"重复回话"的诱因。
+function _longtermExcludingToday(text, today) {
+  const out = [];
+  let inToday = false;
+  for (const l of String(text || "").split("\n")) {
+    const m = l.match(/^##\s+(\d{4}-\d{2}-\d{2})/);
+    if (m) { inToday = (m[1] === today); continue; }
+    if (!inToday) out.push(l);
+  }
+  return out.join("\n").trim();
+}
+
 // P1#9: 记忆信号预筛 - 命中关键词或长度信号才触发 LLM 提炼 (省成本)
 function _hasSignal(user, assistant) {
   const u = String(user || "");

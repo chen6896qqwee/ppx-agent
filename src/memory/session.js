@@ -236,6 +236,22 @@ export class SessionStore {
     return out;
   }
 
+  // 返回某自然日的对话事件(带 seq/type/data), 供 memory-ticker 按 seq 去重滚动归档
+  // (防止 _compileDaily_Rolling 每次把今日全文再次追加, 造成 longterm 内容重复累积)
+  replayDay(day) {
+    const dayStr = String(day).slice(0, 10);
+    const out = [];
+    for (const [, events] of this._logs) {
+      for (const e of events) {
+        if (e.type !== EVENTS.USER && e.type !== EVENTS.ASSISTANT) continue;
+        if (this._dayOf(e.ts) !== dayStr) continue;
+        out.push(e);
+      }
+    }
+    out.sort((a, b) => a.seq - b.seq);
+    return out;
+  }
+
   // fork: 从 boundarySeq 及更早派生新会话 (吸收 dsh fork 语义, 保留不可变源)
   fork(fromKey, boundarySeq, toKey) {
     const keep = this._log(this._safe(fromKey)).filter((e) => e.seq <= boundarySeq);
