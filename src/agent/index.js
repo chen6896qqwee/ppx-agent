@@ -138,6 +138,7 @@ export class PPXAgent {
     this.tools = this.ctx.consume("tools");
     this.scheduler = this.ctx.consume("scheduler");
     this.toolsEnabled = this.ctx.consume("toolsEnabled");
+    this._warnMissingCloudApi(); // 发布首启引导: 未配云端 key 时明确提示
 
     // 注入 LLM 摘要器/提炼器 (依赖 agent 方法, 装配后注入)
     this.memory.summarizer = (raw) => this._summarizeMemory(raw);
@@ -964,6 +965,22 @@ export class PPXAgent {
   // 热重载提供方: 从 config/ppx.json 重建 LLM 客户端列表
   // 用法: HTTP API 增删改提供方后调用, 立即生效无需重启
   // provider 可用性解析复用 plugin/builtin.js (只此一份, 不重复实现)
+  // 发布首启引导: 若未配置任何云端大模型 API key, 明确提示按 README 配置 (不阻断运行)
+  _warnMissingCloudApi() {
+    const provs = (this.config && this.config.providers) || [];
+    const isLocal = (p) => /127\.0\.0\.1|localhost|lm-studio|ollama/i.test(p.base_url || "");
+    const isSpecial = (p) => p.backend === "openclaw" || p.backend === "dsh" || p.id === "dsh";
+    const cloud = provs.filter((p) => !isLocal(p) && !isSpecial(p));
+    const hasCloudKey = cloud.some((p) => p.api_key || (p.api_key_env && process.env[p.api_key_env]));
+    if (hasCloudKey) return;
+    const hasLocal = provs.some(isLocal);
+    warn(
+      "未配置云端大模型 API key。皮皮虾默认走云端大模型, 发布/正式使用必须配置:\n" +
+      "  OPENAI_API_KEY | DEEPSEEK_API_KEY | VOLCENGINE_API_KEY(需填 endpoint) | DASHSCOPE_API_KEY\n" +
+      "详见 README「快速开始 -> ⚠️ 首次使用: 必须配置云端大模型 API」。\n" +
+      (hasLocal ? "(已检测到本地模型, 当前仅作开发/离线兜底)" : "(既无云端 key 也无可用本地模型, 对话将不可用)")
+    );
+  }
   reloadProviders() {
     this.config = this._loadConfig(null);
     this.llm = resolveLLM(this.config);
