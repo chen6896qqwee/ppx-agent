@@ -27,9 +27,11 @@
     "web:build": "npm run build --prefix web",
     "release": "node scripts/release.js",
     "eval": "node scripts/eval.js",
+    "selfheal": "node scripts/selfheal-bench.js",
+    "selfheal:run": "node src/selfheal/run.js",
     "bench": "node scripts/bench.js",
     "test": "node --test --test-force-exit test/*.test.js",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm run selfheal && npm test"
   },
   "keywords": [
     "agent",

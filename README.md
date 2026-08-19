@@ -1,5 +1,8 @@
 # 🦐 皮皮虾 (PPX Agent) 测试版
 
+> 🛡️ **自愈基准**：故意注入破坏 -> 自愈引擎修复 -> 输出修复率。
+> 跑 `node scripts/selfheal-bench.js` -> **7/7 100%**（发布前门禁，`PPX_MIN_SELFHEAL` 可设阈值）。
+
 **一个会自我修复、自我学习的超级 Agent。** 零运行时依赖，纯 Node 原生，支持各大模型 API + 本地模型。
 
 > 架构参考 openhanako/HanaAgent 与 TencentDB-Agent-Memory，扒其记忆分层、自愈内核、工具系统的精华，用干净自包含实现重搭。

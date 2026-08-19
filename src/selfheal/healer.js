@@ -1,4 +1,4 @@
-﻿// src/selfheal/healer.js - 自愈引擎
+// src/selfheal/healer.js - 自愈引擎
 // 1. 启动检查: 修复缺失目录/损坏JSON/权限
 // 2. 崩溃恢复: 检测上次异常退出, 清理残留
 // 3. 数据一致性: 校验记忆文件
@@ -156,6 +156,8 @@ walk(this.dataDir);
     const cleanedBackupDirs = this.cleanupStaleBackupDirs(2);
     // 清理历史 .bak-* 文件 (保留最近 2 个)
     const cleanedBakFiles = this.cleanupStaleBakFiles(2);
+    // 崩溃残留清理后主动翻回 clean: 自愈闭环 - 清了毒就要"宣布痊愈", 否则下次启动还误报崩溃
+    if (crash.crashed) { this.markClean(); info("selfheal: 崩溃残留已清理, 状态置回 clean"); }
     const report = { fixes, crashed: crash.crashed, crashDetail: crash.detail, cleanedCorrupt, cleanedBackupDirs, cleanedBakFiles };
     if (fixes.length) info(`selfheal: 修复 ${fixes.length} 项: ${fixes.join("; ")}`);
     else info("selfheal: 无异常");
