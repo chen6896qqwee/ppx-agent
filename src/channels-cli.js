@@ -9,9 +9,11 @@
 //   ppx-channels enable|disable <name>   启用/禁用
 //   ppx-channels remove <name>           移除配置 (恢复默认)
 //   ppx-channels --root <dir> ...        指定项目根目录 (默认当前目录)
+import { ensureUTF8Console } from "./utils/winutf8.js";
 import path from "node:path";
 import readline from "node:readline/promises";
 import {
+ensureUTF8Console();
   CHANNEL_SCHEMAS, readChannels, listChannels,
   updateChannel, setChannelEnabled, removeChannel,
 } from "./config/channels.js";

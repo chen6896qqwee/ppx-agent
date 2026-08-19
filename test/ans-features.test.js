@@ -55,14 +55,14 @@ test("主动任务生成: 无待办记忆返回 null", async () => {
   fs.rmSync(agent.dataDir, { recursive: true, force: true });
 });
 
-test("主动任务生成: 定时器默认关闭, 开启后能启停", () => {
+test("主动任务生成: 定时器默认开启(温和), 显式关闭后不启动", () => {
   const agent = new PPXAgent({ root: tmp("pc") });
-  assert.equal(agent.startProactiveTicker(() => {}), null, "默认 enabled=false 不启动");
-  agent.config.agent.proactive = { enabled: true, interval_ms: 60000 };
   const timer = agent.startProactiveTicker(() => {});
-  assert.ok(timer, "开启后启动定时器");
+  assert.ok(timer, "默认 enabled=true 启动定时器(温和默认)");
   agent.stopProactiveTicker();
   assert.equal(agent._proactiveTimer, null, "可停止");
+  agent.config.agent.proactive = { enabled: false, interval_ms: 60000 };
+  assert.equal(agent.startProactiveTicker(() => {}), null, "显式 enabled=false 不启动");
   agent.shutdown();
   fs.rmSync(agent.dataDir, { recursive: true, force: true });
 });

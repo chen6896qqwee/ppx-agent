@@ -2,9 +2,11 @@
 // src/server.js - 皮皮虾 HTTP 服务入口
 // 提供: /health, /message (HTTP通道), /feishu/webhook, /wechat/webhook
 // 通道统一走 ChannelManager 注册表: connect + webhook 挂载由各通道 mount() 完成
+import { ensureUTF8Console } from "./utils/winutf8.js";
 import { PPXAgent } from "./agent/index.js";
 import { ChannelManager } from "./channels/index.js";
 
+ensureUTF8Console();
 export async function startServer({ root = process.cwd(), port = 8899, host = "127.0.0.1", config = {}, llm = null } = {}) {
     const agent = new PPXAgent({ root });
   if (llm) {

@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // src/cli.js - 皮皮虾 CLI 交互入口 (readline 历史 + interrupt 中断)
+import { ensureUTF8Console } from "./utils/winutf8.js";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { PPXAgent } from "./agent/index.js";
 import { suggestProactive } from "./ans/proactive.js";
 
+ensureUTF8Console();
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const agent = new PPXAgent({ root: ROOT });
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // scripts/start-web.js - 一条命令同时起内核(8899) + Web UI(3000)
 // 用法: 先 npm run web:build 构建前端, 再 npm run web 启动
+import { ensureUTF8Console } from "../src/utils/winutf8.js";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+ensureUTF8Console();
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WEB = path.join(ROOT, "web");
 
@@ -38,7 +40,7 @@ const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
 const web = spawn(npmCmd, ["run", "start"], {
   cwd: WEB,
   stdio: "inherit",
-  shell: process.platform === "win32",
+  shell: false, // 数组传参+显式 npm.cmd，规避 DEP0190 shell 注入
 });
 children.push(web);
 

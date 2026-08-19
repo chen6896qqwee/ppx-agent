@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## v1.3.1-dev (2026-08-19) — P2整改: context_window按模型预设 + 主动提醒温和通电
+- **context_window 按模型预设**: openai=128k, deepseek=64k, qwen-turbo=131k, qwen-vl=32k, zhipu/glm-5v=64k; volcengine/lmstudio(本地)保持 8192 保守默认。长对话不再被过早压缩, 改善连贯性。
+- **主动提醒温和通电**: proactive 默认 enabled=true(1h扫描), 无待办信号返回 null 不打扰 + 24h去重 + 过期检测(昨天/上周/已过日期)兜底。护城河特性默认可见。
+- 同步更新 ans-features.test.js 断言(默认开启逻辑)。
+- 全量测试 464 pass / 0 fail。
+
+
+## v1.3.0-dev (2026-08-19) — 测试期整改: 控制台UTF-8 + 多模态接智谱 + 配置占位符校验
+- **控制台 UTF-8 根治**: 新增 `src/utils/winutf8.js`（启动强制 chcp 65001 + stdout/stderr 锁 utf8），挂进 cli/server/channels-cli/agent入口/start-web 全部 5 个入口, 解决 PowerShell/GBK 终端把中文解成乱码。
+- **DEP0190 修复**: `scripts/start-web.js` 去掉 shell:true → 数组传参 + 显式 npm.cmd, 消除子进程参数注入风险。
+- **多模态接智谱**: providers 新增 `zhipu`(base_url=open.bigmodel.cn/api/paas/v4, model=glm-5v-turbo, vision:true, ZHIPU_API_KEY)。lmstudio 本地 gemma 视觉不可靠, 已关 vision=false, 避免和智谱抢读图。
+- **配置占位符校验落地**: `config/index.js` 的 validateConfig 增加占位符检测(REPLACE_WITH_/your_endpoint/your_api_key), 启动即警告不可用户提供者, 杜绝 volcengine REPLACE_WITH_YOUR_ENDPOINT 静默失败的坑。
+- 全量测试 464 pass / 0 fail (4 skipped 均为 !NET 网络用例)。
+
+
 ## v1.2.0 (2026-08-19)
 - `src/memory/memory-ticker.js` + `src/memory/session.js`: 记忆滚动归档改用游标(lastRolledDay/lastRolledSeq), 只追加新事件, 修复同一段对话在 longterm 反复出现导致重复回话的问题。
 - `src/tools/advanced.js`: HTTP fetch 重定向改 SSRF 安全模式(redirect:manual 逐跳校验公网地址), 堵住 "302→内网/云元数据" 绕过。
@@ -703,3 +718,4 @@ v1.1.0 首次 npm 发布后暴露一个入口缺陷: `ppx-serve` 指向的 `src/
 - 会话事件日志: append 不可变 / derive 投影 / replay / fork / 跨实例恢复 全测过
 - 全量测试: 76 个 74 过 0 失败 2 跳过
 - 旧 default.jsonl 新格式正常加载, 旧 eval-test 格式优雅跳过
+

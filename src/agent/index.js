@@ -1,4 +1,5 @@
 // src/agent/index.js - Agent 引擎 (皮皮虾核心) v0.2 含工具调用
+import { ensureUTF8Console } from "../utils/winutf8.js";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -1026,6 +1027,7 @@ export class PPXAgent {
   }
 }
 
+ensureUTF8Console();
 if (process.argv[1] && process.argv[1].endsWith("src/agent/index.js")) {
   const agent = new PPXAgent();
   console.log(`皮皮虾 就绪 | 记忆:${agent.facts.count()}条 | 工具:${agent.tools.list().join(",")} | 自愈:${agent.health.fixes.length ? "修复" + agent.health.fixes.length + "项" : "OK"}`);
