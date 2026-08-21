@@ -55,7 +55,7 @@
 
 ### 5. LLM 客户端 + 重试内核
 
-`src/llm/client.js` 多后端：`http`（默认直连）/ `openclaw` / `deepseek`（可选引擎）。
+`src/llm/router.js` **模型路由中枢**（2026-08-21 新增）：占位死配置过滤 + 云端真key优先 + 本地零配置兜底 + 健康排序。`src/llm/client.js` 多后端：`http`（默认直连）/ `openclaw` / `deepseek`（可选引擎）。
 - `src/llm/retry.js`：瞬态分类重试（429/5xx/timeout + Retry-After + 可取消指数退避）
 - `src/llm/fence.js`：纯文本工具围栏协议（openclaw/dsh 后端工具代理）
 - 纯文本工具调用修复：http 后端返回文本工具意图时自动恢复为原生 tool_calls
@@ -98,7 +98,7 @@ src/
 ├── memory/      四层记忆 + 会话事件日志 + 压缩层
 ├── tools/       工具系统（catalog + seam + builtin/advanced/methods/selfmod/document/ocr）
 ├── seam/        服务层能力 seam（shell 等）
-├── llm/         LLM 客户端（client + retry + fence + dsml + embedder）
+├── llm/         LLM 客户端（router 路由中枢 + client + retry + fence + dsml + embedder）
 ├── mode/        编排模式（react/single/plan-exec/router/blackboard/graph/legion）
 ├── orchestrator/ 多 agent 军团（legion + dag + worker）
 ├── mcp/         MCP 客户端
@@ -118,7 +118,7 @@ CLI 入口：`src/cli.js`（对话）/ `src/server.js`（HTTP 服务）/ `src/ch
 用户消息 → chat()/chatStream()
   → 本地意图预判(可选) → 模式分发(react 默认)
   → buildMessages(组装 system[核心价值+persona+记忆+压缩后历史])
-  → _llmWithFallback(并发健康探测 → provider 回退)
+  → 路由: router.js(占位过滤/云优先/本地兜底/健康排) → client 直连, 失败再切下一 provider
   → _llmWithTools(工具循环, 每轮发 step 事件)
       → apiChat(http 直连, 瞬态重试, 工具调用修复)
       → _runTool(工具执行, before/after 钩子, 轨迹记录)

@@ -20,6 +20,9 @@ import { Auditor, verifyLesson, heldOutSplit } from "../audit/verifier.js";
 import { Lifecycle } from "../ans/lifecycle.js";
 import { valuesPrompt } from "../ans/values.js";
 import { suggestProactive, markTaskDone } from "../ans/proactive.js";
+import { record as rewardRecord, context as rewardContext, status as rewardStatus } from "../ans/reward.js";
+import { scan as evictionScan, status as evictionStatus } from "../ans/eviction.js";
+import { installGuard, guardStatus } from "../ans/guard.js";
 import { SkillLoader } from "../skills/loader.js";
 import { EvolutionEngine } from "../selfheal/evolve.js";
 import { verifySkill, verifyUpgradeSkill } from "../skills/verify.js";
@@ -148,8 +151,23 @@ export class PPXAgent {
     this.scenes = this.ctx.consume("scenes");
     this.personaStore = this.ctx.consume("personaStore");
     this.traces = this.ctx.consume("traces");
+    this.bus = this.ctx.consume("bus");
+    // ⑧ 免疫系: 全局闸门挂到总线命令通道 (拦截+审计)
+    this.__guard = installGuard(this, { allowList: this.config.agent?.guardAllowList || [] });
+    // ⑦ Reward 闭环: 订阅总线工具成败, 自动更新行为倾向 (EWMA)
+    this.bus?.on("tool/result", (ev) => {
+      const { name, ok } = ev.payload || {};
+      if (name) { try { rewardRecord(this, { tool: name, ok: !!ok }); } catch {} }
+    });
     this.tools = this.ctx.consume("tools");
     this.scheduler = this.ctx.consume("scheduler");
+    // ⑤排泄自治: 每日扫描长期记忆做冗余识别/冷热分层 (幂等注册, 不重复)
+    try {
+      const hasE = (this.scheduler?.list?.() || []).some((j) => j.name === "eviction-daily");
+      if (!hasE) this.scheduler?.add({ name: "eviction-daily", cron: "02:00", type: "daily", action: () => { try { evictionScan(this); } catch {} } });
+    } catch {}
+    // 首次启动跑一次排遗扫描 (预热治理状态)
+    try { evictionScan(this); } catch {}
     this.toolsEnabled = this.ctx.consume("toolsEnabled");
     this._warnMissingCloudApi(); // 发布首启引导: 未配云端 key 时明确提示
 
@@ -496,7 +514,8 @@ export class PPXAgent {
     const skills = this._skillsPrompt();
     // DSML 原生文本模型 opt-in (provider.dsml=true): 注入工具协议, 让模型能稳定输出 DSML 结构做工具调用
     const dsml = this._dsmlPrompt();
-    return [values, baseCtx, skills, citation, perspective, extra, dsml].filter(Boolean).join("\n\n");
+    const rewardCtx = rewardContext(this); // ⑦ 低可靠性工具提醒 (Reward 闭环注入)
+    return [values, baseCtx, skills, citation, perspective, extra, dsml, rewardCtx].filter(Boolean).join("\n\n");
   }
 
   // DSML 工具调用协议注入 (v1.1.1 接线): 修复 buildDsmlPrompt 过去从未注入的缺口。
@@ -554,6 +573,7 @@ export class PPXAgent {
   // 对话主入口 (含工具调用循环)
   async chat(userMsg, { persist = true, sessionKey = "default", mode = null } = {}) {
     this.clearInterrupt(); // 新一轮对话开始, 复位上一轮的中断状态
+    this.bus?.emit("chat/user", { userMsg, sessionKey }, { source: "agent.chat" });
     let reply;
     // 内核自主决策: 高置信简单指令本地处理, 不调 LLM
     const local = (this.config.agent?.localIntent !== false) ? await this._localIntent(userMsg) : null;
@@ -577,6 +597,7 @@ export class PPXAgent {
     if (persist) {
       this._pushTurn(sessionKey, String(userMsg), reply);
       await this.memory.recordTurn(userMsg, reply);
+      this.bus?.emit("memory/record", { userMsg, reply }, { source: "agent.chat" });
       // L2 场景归档: 从新记忆里找需要归档的
       this._archiveScenes();
       this._learnFromTurn(userMsg, reply);
@@ -584,6 +605,7 @@ export class PPXAgent {
       this._maybeRefreshPersona();
     }
     // 生命周期推进: 每次对话计数, 阶段转换 born→growing→mature
+        this.bus?.emit("chat/reply", { reply }, { source: "agent.chat" });
     this._lifecycleTick();
     this.evolve && this.evolve.tick();
     return reply;
@@ -597,6 +619,31 @@ export class PPXAgent {
   // 生命周期摘要 (可观测, 委托 ans/lifecycle 模块)
   lifecycleStatus() {
     return this.lifecycle.status();
+  }
+
+  // Reward 行为倾向可观测 (⑦内分泌)
+  rewardStatus() {
+    return rewardStatus(this);
+  }
+
+  // 排泄治理可观测 (⑤遗忘-归档)
+  evictionStatus() {
+    return evictionStatus(this);
+  }
+
+  // 立即手动触发一次记忆治理扫描 (冗余识别 + 冷热分层)
+  runMemoryEviction() {
+    return evictionScan(this);
+  }
+
+  // 免疫闸门可观测 (⑧安全治理)
+  guardStatus() {
+    return guardStatus(this);
+  }
+
+  // 单次审批: 放行一个危险命令 verb (一次用完自动失效)
+  approveGuard(verb) {
+    return this.__guard ? this.__guard.approveOnce(String(verb)) : null;
   }
 
 
@@ -693,9 +740,17 @@ export class PPXAgent {
   async _runTool(name, args) {
     const t0 = Date.now();
     this._lastTurnUsedTools = true;
+    this.bus?.emit("tool/call", { name, args }, { source: "agent._runTool" });
     if (this._onToolEvent) { try { this._onToolEvent({ type: "start", tool: name, args, ts: Date.now() }); } catch {} }
     const result = await this.tools.call(name, args, { agent: this });
     const ok = !result.startsWith(TOOL_ERROR_PREFIX);
+    this.bus?.emit("tool/result", {
+      name,
+      ok,
+      args,
+      durationMs: Date.now() - t0,
+      error: ok ? null : result.slice(0, 300),
+    }, { source: "agent._runTool" });
     this.traces.record({
       tool: name,
       args,
@@ -1109,15 +1164,21 @@ export class PPXAgent {
     const isSpecial = (p) => p.backend === "openclaw" || p.backend === "dsh" || p.id === "dsh";
     const cloud = provs.filter((p) => !isLocal(p) && !isSpecial(p));
     const hasCloudKey = cloud.some((p) => p.api_key || (p.api_key_env && process.env[p.api_key_env]));
-    if (hasCloudKey) return;
     const hasLocal = provs.some(isLocal);
+    // 默认本地优先(agent.model_preference=local): 有本地模型即满足运行, 不告警(本地测试正用本地模型)
+    if (hasLocal) return;
+    // 无本地但配了云端 key → 正常走云端, 不告警
+    if (hasCloudKey) return;
+    // 任何可用模型都没有 → 必须提示, 否则对话不可用
     warn(
-      "未配置云端大模型 API key。皮皮虾默认走云端大模型, 发布/正式使用必须配置:\n" +
-      "  OPENAI_API_KEY | DEEPSEEK_API_KEY | VOLCENGINE_API_KEY(需填 endpoint) | DASHSCOPE_API_KEY\n" +
-      "详见 README「快速开始 -> ⚠️ 首次使用: 必须配置云端大模型 API」。\n" +
-      (hasLocal ? "(已检测到本地模型, 当前仅作开发/离线兜底)" : "(既无云端 key 也无可用本地模型, 对话将不可用)")
+      "未检测到任何可用模型。皮皮虾默认本地优先(agent.model_preference=local), 需至少满足一项:\n" +
+      "  1) 启动本地模型服务 (LM Studio 等, 127.0.0.1 即识别)\n" +
+      "  2) 配置云端大模型 API key: OPENAI_API_KEY | DEEPSEEK_API_KEY | VOLCENGINE_API_KEY(需填 endpoint) | DASHSCOPE_API_KEY\n" +
+      "  3) 或显式设 agent.model_preference=cloud 后走云端 key\n" +
+      "详见 README「快速开始」模型接入节。"
     );
   }
+  // 热重载提供方: 从 config/ppx.json 重建 LLM 客户端列表
   reloadProviders() {
     this.config = this._loadConfig(null);
     this.llm = resolveLLM(this.config);
@@ -1159,6 +1220,7 @@ export class PPXAgent {
       try { this._legion.shutdownAll(); } catch {}
     }
     this.memory._saveState?.();
+    this.scheduler?.shutdown?.(); // ⑤/②: 清定时器防进程挂起
     this.healer.markClean();
   }
 }

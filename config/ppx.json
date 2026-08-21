@@ -52,13 +52,7 @@
       "timeout_ms": 180000,
       "context_window": 32768
     },
-    {
-      "id": "volcengine",
-      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "api_key_env": "VOLCENGINE_API_KEY",
-      "model": "REPLACE_WITH_YOUR_ENDPOINT",
-      "timeout_ms": 180000
-    },
+
     {
       "id": "lmstudio",
       "base_url": "http://127.0.0.1:1234/v1",
@@ -78,7 +72,7 @@
     }
   ],
   "_optional_engines": {
-    "_note": "可选：本地引擎接入。默认不启用(未在 providers 内)。要用 OpenClaw/DeepSeek Harness 时，把下面对象移入 providers 数组，并设置环境变量 PPX_OPENCLAW_MJS / PPX_DSH_ROOT 指向引擎位置。",
+    "_note": "可选引擎。火山引擎 volcengine 需先填真实 endpoint(model 不能留 REPLACE_WITH_YOUR_ENDPOINT 占位), 把它加回 providers 数组并设 VOLCENGINE_API_KEY 即启用；本地引擎(openclaw/dsh)默认不启用, 要用时把对象移入 providers 并设对应路径环境变量。",
     "openclaw": {
       "id": "openclaw",
       "backend": "openclaw",

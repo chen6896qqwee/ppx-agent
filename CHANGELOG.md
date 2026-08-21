@@ -1,5 +1,33 @@
 # CHANGELOG
 
+## v1.5.0-dev (2026-08-21) - 有机体八系统全通 + 模型路由中枢 + WebUI 美感升级
+> 一次"从躯体到会进化"的冲刺: P0-P4 四大系统落地打通循环/内分泌/排泄/免疫, 模型接入重构为"本地零配置默认可跑、云端/本地自由接入", 产品壳与静态壳 WebUI 视觉统一升级。
+
+### Architecture / 架构 (P0-P4 全落地, 见 docs/ARCHITECTURE-ORGANISM.md)
+- **P0 ②循环系 · 全局总线** (新增 src/bus/): RuntimeBus = Event广播 + Command/Result回路 + State槽 + intercept拦截器; busPlugin 排装配数组首位注入 ctx.consume("bus"); agent 在 chat 入口/_runTool/记忆写入三处埋点 event. 29/29 测试过.
+- **P1 ⑦内分泌系 · Reward 闭环** (新增 src/ans/reward.js): 订阅总线 tool/result 自动采集 (无需主动触发), EWMA 平滑维护各工具倾向权重 + 低可靠工具识别注入 system prompt; 驱动 lifecycle evolve + 上下文 db; 持久化跨重启. 6/6 测试过.
+- **P2+P3 ⑤排泄系 · 排遗自治** (新增 src/ans/eviction.js): 冗余识别用自实现 bigram overlap 两两比较 (findSimilar 对自身返回1.0用不了), 冷热分层 + 治理报告; 启动挂每日02:00扫描(幂等); runMemoryEviction()/evictionStatus() 入口. 顺带修 Scheduler 缺 shutdown() 导致 daily 任务挂住进程退不出 (新增 Scheduler.shutdown + agent.shutdown 清定时器). 4/4 测试过.
+- **P4 ⑧免疫系 · 全局闸门** (新增 src/ans/guard.js): 挂总线 intercept() 做全局免疫——危险 verb(delete/clear/wipe) 未授信默认阻断, 静态白名单 + approveGuard() 单次审批双模式授权; 全部命令记 Auditor 账本 + PII 探测 (实现 RC1 §5.3). 5/5 测试过. agent 暴露 guardStatus()/approveGuard().
+
+### 模型接入重构 (新增 src/llm/router.js, 本地零配置默认可跑)
+- **模型路由中枢** 替换旧"按配置序找第一个有key": 占位死配置过滤(REPLACE_WITH_YOUR_ENDPOINT 自动剔除不再误选/报噪音) + 云端真key优先 + 本地零配置兜底 + orderByHealth() 健康排序.
+- builtin.js 旧 resolveLLM/resolveAllLLMs 迁 router.js, 只 re-export 向后兼容 (坑: import 而非 export 曾致 52 处 SyntaxError, 已修).
+- 修本地兜底死穴: lmstudio 带字面 api_key 被 isLocal&&!hasRealKey 误排除 -> 本地收所有本地服务.
+- config/ppx.json: volcengine 占位配置移出 providers 主体进 _optional_engines 说明. 6/6 测试过.
+
+### WebUI 美感升级 (web/ Next.js 产品壳 + public 静态壳)
+- globals.css: 设计令牌 --ppx-*(品牌色系) + @keyframes msgIn 进场动画 + .glass 毛玻璃 + 细滚动条 + 品牌选中色 + .field 输入聚焦光晕.
+- page.tsx: header 毛玻璃吸附 + logo 光晕; 消息气泡带头像角标"虾"+名字+进场动画, 用户渐变/agent 深底; 空态品牌引导卡; 发送按钮渐变发光; 输入 field; 工具卡/tab/会话/场景/记忆/轨迹卡片统一边框+动效.
+- settings/*: 侧栏导航品牌渐变 + 四页(general/model/plugins/presets)卡片/错误左色条/成功左绿条/按钮统一规范.
+- public/index.html 静态壳: 追加 CSS 同款动效/渐变/聚焦/滚动条/阴影.
+- 验证: tsc=0 + npm run build 482ms Compiled + 静态预渲染正常. 备份 globals.css.bak_0821 / page.tsx.bak_0821.
+
+### 运维/踩坑记录
+- model 页修复: 脚本链式 replace 把行卡片 className 尾段吞了(p-3.5"), 直接定位字节复位.
+- **误删警示**: 清理临时脚本时 `Get-ChildItem -Filter '_*.mjs' -Recurse` 把 web/node_modules 的 babel/runtime 转译 helper 缓存(_apply_decorated_descriptor.mjs 等约百个)也删了; npm install 重建 + build 验证恢复, 源码零损伤 (page.tsx/globals.css/layout 完好). 教训: 清临时文件必须限定 workdir 且排除 node_modules; 别用裸 -Recurse 广扫.
+- CHANGELOG: 本次为 v1.5.0-dev, 上一条 v1.4.0-dev (2026-08-19).
+
+
 ## v1.4.0-dev (2026-08-19) - Harness 强化: Auditor 独立验证 + held-out 回归 + 探索熔断
 > 基于 AI-Agent 架构 7篇研究 (LongHorizon MEA / Self-Harness / Meta-Harness): 不信任模型自评, 只有独立验证通过的事实才写回持久状态。
 

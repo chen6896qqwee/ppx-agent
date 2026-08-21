@@ -100,6 +100,51 @@
   .tool-card .tc-status.ok { color:var(--ok-fg); }
   .tool-card .tc-status.fail { color:var(--bad-fg); }
   .side-toggle.active { color:var(--accent); border-color:var(--accent); }
+
+/* ===== 皮皮虾 UI 质感增强 (2026-08-21) ===== */
+/* 消息进场动画 */
+@keyframes msgIn { from { opacity:0; transform:translateY(8px) scale(.98); } to { opacity:1; transform:translateY(0) scale(1); } }
+.msg, .tool-card { animation: msgIn .22s ease-out both; }
+
+/* 消息气泡: 更柔圆角 + 阴影 */
+.msg { border-radius:14px !important; box-shadow:0 1px 4px rgba(0,0,0,.15); }
+.msg.user { background:linear-gradient(135deg,#1d5cff,#2563eb) !important; }
+.msg.agent { border-radius:14px !important; }
+
+/* 输入聚焦光晕 */
+.input-bar input { transition:border-color .15s, box-shadow .15s; }
+.input-bar input:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(77,163,255,.18); }
+
+/* 发送按钮渐变 + 按压缩放 */
+.input-bar button { background:linear-gradient(135deg,#1d5cff,#2563eb) !important; box-shadow:0 2px 8px rgba(29,92,255,.25); transition:transform .08s,opacity .15s; }
+.input-bar button:active { transform:scale(.97); }
+
+/* 会话/卡片阴影微提 */
+.card, .sess-item { box-shadow:0 1px 3px rgba(0,0,0,.12); transition:border-color .15s, transform .1s; }
+.sess-item:active { transform:scale(.99); }
+
+/* 细滚动条 */
+::-webkit-scrollbar { width:8px; height:8px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:#2c3038; border-radius:6px; }
+::-webkit-scrollbar-thumb:hover { background:#3a3f4a; }
+* { scrollbar-width:thin; scrollbar-color:#2c3038 transparent; }
+
+/* tab 动效 */
+.tab { transition:color .15s; }
+/* 侧栏抽屉过渡 */
+.side, .side-toggle { transition:transform .25s ease, color .15s; }
+
+/* 按钮统一 hover 提亮 */
+.btn:hover, .modal .primary:hover, .input-bar button:hover { filter:brightness(1.08); }
+.btn, .modal button, .side-toggle { transition:filter .15s, transform .1s, background-color .15s; cursor:pointer; }
+
+/* 轻色下适配输入框 */
+@media (prefers-color-scheme: light){
+  .msg.user { background:linear-gradient(135deg,#2563eb,#3b82f6) !important; }
+  ::-webkit-scrollbar-thumb { background:#d0d4da; }
+}
+
 </style>
 </head>
 <body>

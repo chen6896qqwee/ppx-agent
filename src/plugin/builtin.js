@@ -6,7 +6,6 @@ import { Healer } from "../selfheal/healer.js";
 import { Persona } from "../persona/index.js";
 import { FactStore, MemoryTicker, Experience, L0Recorder, SceneStore, PersonaStore } from "../memory/index.js";
 import { SessionStore } from "../memory/session.js";
-import { LLMClient } from "../llm/index.js";
 import {
   ToolCatalog, registerBuiltinTools, registerAdvancedTools, Scheduler,
   registerMethodTools, registerSelfmodTools, registerCustomTools, registerDocumentTools,
@@ -15,6 +14,8 @@ import { embedderFromConfig } from "../llm/embedder.js";
 import { LocalShellProvider } from "../seam/shell.js";
 import { registerDelegateTools } from "../tools/delegate.js";
 import { Traces } from "../utils/trace.js";
+import { RuntimeBus } from "../bus/runtime-bus.js";
+export { isUsableProvider, resolveLLM, resolveAllLLMs } from "../llm/router.js";
 import { ModeRegistry, registerDefaultModes } from "../mode/index.js";
 import { planExecExecutor } from "../mode/plan-exec.js";
 import { routerExecutor } from "../mode/router.js";
@@ -22,35 +23,21 @@ import { blackboardExecutor } from "../mode/blackboard.js";
 import { graphExecutor } from "../mode/graph.js";
 import { legionExecutor } from "../mode/legion.js";
 
-// ---- 纯函数: LLM 解析 (agent/热重载/插件共用, 只此一份) ----
-// 判断 provider 是否可用: 有 api_key / 本地服务 / openclaw 或 deepseek 底座
-export function isUsableProvider(prov) {
-  const key = prov.api_key || process.env[prov.api_key_env];
-  const isLocal = /127\.0\.0\.1|localhost|lm-studio|ollama/i.test(prov.base_url || "");
-  const isOpenclaw = prov.backend === "openclaw" || prov.id === "openclaw";
-  const isDeepseek = prov.backend === "deepseek" || prov.backend === "dsh" || prov.id === "dsh";
-  return !!(key || isLocal || isOpenclaw || isDeepseek);
-}
-
-export function resolveAllLLMs(config) {
-  const provs = (config && config.providers) || [];
-  return provs.filter(isUsableProvider).map((p) => new LLMClient(p));
-}
-
-export function resolveLLM(config) {
-  const provs = (config && config.providers) || [];
-  // 测试/生产区分: 设 PPX_PROVIDER=<id> 可强制指定用哪个 provider (如测试用本地 lmstudio),
-  // 发布用户不设则保持默认 (云端优先按顺序回退)。
-  const forced = process.env.PPX_PROVIDER;
-  if (forced) {
-    const t = provs.find((x) => x.id === forced || x.id === String(forced).toLowerCase());
-    if (t) return new LLMClient(t);
-  }
-  const p = provs.find(isUsableProvider);
-  return p ? new LLMClient(p) : null;
-}
+// ---- LLM 路由 (唯一真相源已迁至 src/llm/router.js, 此文件仅 re-export 向后兼容) ----
+// router.js 负责: 占位死配置过滤 / 云端真key优先 / 本地零配置兜底 / 健康排序 / PPX_PROVIDER 强制
+// 此处保留导出名, agent/热重载/插件继续用 builtin.resolveLLM 等旧引用。
 
 // ---- 内置插件: 每个 (ctx) => void, 用 ctx.provide 注册服务 ----
+
+
+export const busPlugin = (ctx) => {
+  // ②循环系: 全局 Runtime 总线。必须最先装配, 其他插件可 ctx.consume("bus") 挂订阅/注册命令。
+  const bus = new RuntimeBus();
+  ctx.provide("bus", bus);
+  // 状态槽: sessionKey 归属 (给观测/审计看当前活跃会话)
+  bus.set("bootedAt", Date.now());
+  return bus;
+};
 
 export const healerPlugin = (ctx) => {
   const healer = new Healer(ctx.consume("root"));
@@ -154,6 +141,7 @@ export const modePlugin = (ctx) => {
 
 // 默认内置插件装配顺序 (依赖在前)
 export const builtinPlugins = [
+  busPlugin, // ②循环系: 全局总线必须最先 (依赖在前)
   healerPlugin,
   personaPlugin,
   factsPlugin,

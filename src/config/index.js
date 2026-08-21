@@ -30,6 +30,8 @@ export const DEFAULT_CONFIG = {
     max_tool_rounds: 8,
     tool_result_budget: 4000,
     max_tool_error_retry: 2,
+    // 模型优先级(local 本地优先/cloud 云端优先): 本地测试默认 local, 直接走本地模型; 配云端 key 也先本地
+    model_preference: "local",
   },
   user: { name: "兄弟" },
   providers: [],

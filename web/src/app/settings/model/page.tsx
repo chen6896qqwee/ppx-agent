@@ -63,12 +63,12 @@ export default function ModelSettingsPage() {
       <div className="mx-auto w-full max-w-3xl">
         {/* 返回 + 标题 */}
         <div className="mb-6 flex items-center gap-3">
-          <Link href="/" className="rounded-lg border border-neutral-700 px-3 py-1.5 text-[12px] text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200">← 返回聊天</Link>
+          <Link href="/" className="field rounded-lg border border-[#2a2e37] px-3 py-1.5 text-[12px] text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200">← 返回聊天</Link>
           <h1 className="text-lg font-semibold">模型</h1>
         </div>
         <p className="mb-6 text-[13px] text-neutral-500">填入各提供方的 API 密钥即可使用其模型。带绿点表示已就绪；红点表示需要配置密钥或端点。</p>
 
-        {err && <div className="mb-4 rounded-xl border border-red-900/40 bg-red-950/30 px-4 py-3 text-[13px] text-red-300">⚠️ {err}（请确认后端已启动, 或在浏览器控制台通过 localStorage 设置 ppx_auth_token）</div>}
+        {err && <div className="mb-4 rounded-xl border border-red-900/40 border-l-4 border-l-red-500/60 bg-red-950/30 px-4 py-3 text-[13px] text-red-300">⚠️ {err}（请确认后端已启动, 或在浏览器控制台通过 localStorage 设置 ppx_auth_token）</div>}
 
         {/* 提供方列表 */}
         <div className="space-y-3">
@@ -82,7 +82,7 @@ export default function ModelSettingsPage() {
             const ready = !!p.api_key_set || !!p.mjs || !!p.dsh_root;
             const st = status[p.id];
             return (
-              <div key={p.id} className="flex items-center gap-4 rounded-xl border border-neutral-800 bg-neutral-900 px-4 py-3.5">
+              <div key={p.id} className="flex items-center gap-4 rounded-xl border border-[#26292f] bg-neutral-900/70 px-4 py-3.5">
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{p.id}</span>
@@ -214,10 +214,10 @@ function ProviderDialog({
           <label htmlFor="vision" className="text-[13px] text-neutral-300">支持视觉（多模态）</label>
         </div>
 
-        {err && <div className="mb-3 rounded-lg border border-red-900/40 bg-red-950/30 px-3 py-2 text-[12px] text-red-300">⚠️ {err}</div>}
+        {err && <div className="mb-3 rounded-lg border border-red-900/40 border-l-4 border-l-red-500/60 bg-red-950/30 px-3 py-2 text-[12px] text-red-300">⚠️ {err}</div>}
 
         <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-lg border border-neutral-700 px-4 py-2 text-[13px] text-neutral-300 hover:bg-neutral-800">取消</button>
+          <button onClick={onClose} className="field rounded-lg border border-[#2a2e37] px-4 py-2 text-[13px] text-neutral-300 hover:bg-neutral-800">取消</button>
           <button onClick={save} disabled={saving} className="rounded-lg bg-[#1d5cff] px-4 py-2 text-[13px] font-medium text-white hover:bg-[#1a4fd8] disabled:opacity-50">{saving ? "保存中…" : isEdit ? "保存" : "创建提供方"}</button>
         </div>
       </div>

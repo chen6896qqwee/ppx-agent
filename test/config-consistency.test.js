@@ -36,6 +36,7 @@ const CONSUMED = {
   "agent.max_tool_rounds": "src/agent/index.js 工具循环最大轮次",
   "agent.tool_result_budget": "src/agent/index.js trimToolResult 结果裁剪预算",
   "agent.max_tool_error_retry": "src/agent/index.js 工具错误重试次数",
+  "agent.model_preference": "src/llm/router.js orderProviders 本地/云端优先级(local 默认)",
   // user
   "user.name": "src/agent/index.js userName (persona 称呼)",
   // providers

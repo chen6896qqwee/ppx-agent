@@ -54,9 +54,9 @@
 
 ## 🚀 快速开始
 
-### ⚠️ 首次使用：必须配置云端大模型 API
+### ⚠️ 首次使用：本地模型优先，云端可选（极简配置）
 
-皮皮虾**默认走云端大模型 API**（OpenAI 兼容协议）。首次运行前你必须配置 **至少一个** 云端 API key，否则无法对话。
+皮皮虾**默认优先使用本地模型**（LM Studio 等本地推理，需先启动本地服务）。配了**至少一个**云端 API key 时自动云端优先；无任意可用模型（既无云端 key 也未运行本地服务）时对话不可用（见启动提示）。云端/本地自由接入，互不冲突。
 
 按需选一个厂商，把 key 设为环境变量（Windows 用 `setx`，Linux/macOS 用 `export`）：
 
@@ -74,9 +74,12 @@ setx VOLCENGINE_API_KEY "..."
 setx DASHSCOPE_API_KEY "sk-..."
 ```
 
-重开终端生效，然后直接 `ppx` 开聊。配置了哪个 key，就自动用对应云端模型（`providers` 按顺序回退）。
+重开终端生效，然后直接 `ppx` 开聊。配了云端 key 就**云端优先**（按 providers 云段顺序），没配任何云端 key 就**回落本地推理**（需本地模型服务在运行）：
+- 无云端 key + 本地 LM Studio 未启动 → 对话不可用（启动时会有明确提示）
+- 双击 `双击启动皮皮虾-服务.bat` 会强制本地 lmstudio 模式。
+路由逻辑见 docs/ARCHITECTURE-ORGANISM.md 模型接入节。
 
-> 本地模型（LM Studio）仅限开发/离线测试；**交付给用户请一律使用云端 API**。
+> 本地模型（LM Studio）离线/私有场景直接用，**前提是本地服务已启动**；要更高质量答案可再配云端 key 自动升级。云端/本地自由接入，互不冲突。
 ### 全局安装 (npm)
 
 直接从 npm 安装，即可使用命令行工具：
@@ -123,7 +126,7 @@ npm run test
 - **压测**: `npm run bench` — 并发/长会话吞吐基线
 
 
-## 🔌 模型接入 (API 优先)
+## 🔌 模型接入 (云端 API 优先, 本地模型兜底)
 
 皮皮虾支持任意 **OpenAI 兼容端点**, 自动多 provider 回退:
 
@@ -138,7 +141,7 @@ npm run test
 }
 ```
 
-**回退机制**: 第一个 provider 失败自动切换到下一个, 直到成功。API 全挂时可用本地 LM Studio 兜底:
+**回退机制**: 路由层 (router.js) 负责选主模型, 运行时 (agent) 负责失败切换——选中 provider 连不上自动切下一个, 直到成功。本地 LM Studio 示例:
 
 ```json
 { "id": "lmstudio", "base_url": "http://127.0.0.1:1234/v1", "api_key": "lm-studio", "model": "gemma-4-e2b" }

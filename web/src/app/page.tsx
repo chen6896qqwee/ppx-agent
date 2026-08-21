@@ -180,7 +180,7 @@ export default function Home() {
   // 工具调用卡片渲染 (本轮)
   function ToolCard({ ev }: { ev: ToolEv }) {
     return (
-      <div className="mb-1.5 flex items-center gap-2 rounded-lg border border-neutral-800 bg-[#15181d] px-3 py-1.5 text-[12px]">
+      <div className="msg-in mb-1.5 flex items-center gap-2 rounded-lg border border-[#26292f] bg-[#181c23] px-3 py-1.5 text-[12px] shadow-sm">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${ev.status === "start" ? "animate-pulse bg-[#f0b429]" : ev.ok ? "bg-[#3ddc84]" : "bg-[#ff6b6b]"}`} />
         <span className="font-medium text-neutral-300">{ev.tool}</span>
         {ev.status === "start" ? (
@@ -198,8 +198,8 @@ export default function Home() {
     <div className="flex h-screen bg-[#0f1115] text-neutral-200">
       {/* 聊天区 */}
       <main className="flex flex-1 flex-col border-r border-neutral-800">
-        <header className="flex items-center gap-3 border-b border-neutral-800 px-5 py-3.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#28b894] to-[#3b82f6] text-lg font-bold text-white">皮</div>
+        <header className="glass sticky top-0 z-10 flex items-center gap-3 border-b border-[#26292f] px-5 py-3.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#28b894] to-[#3b82f6] text-lg font-bold text-white shadow-lg shadow-cyan-500/20">皮</div>
           <div>
             <h1 className="text-sm font-semibold">皮皮虾</h1>
             <p className="text-[11px] text-neutral-500">PPX Agent · 零依赖智能体内核</p>
@@ -207,7 +207,7 @@ export default function Home() {
           <span className="ml-auto rounded-full bg-[#1d2a3a] px-2.5 py-0.5 text-[11px] text-[#4da3ff]">
             {currentKey === DEFAULT_SESSION ? "默认会话" : currentKey.slice(0, 16)}
           </span>
-          <Link href="/settings/model" className="rounded-lg border border-neutral-700 px-3 py-1.5 text-[12px] text-neutral-300 hover:bg-neutral-800 hover:text-neutral-200">设置</Link>
+          <Link href="/settings/model" className="field rounded-lg border border-[#2a2e37] px-3 py-1.5 text-[12px] text-neutral-300 hover:bg-neutral-800 hover:text-neutral-200">设置</Link>
         </header>
         {activeGuide && (
           <div className="flex items-center gap-3 border-b border-[#5e2b2b] bg-[#2b1616] px-5 py-3 text-[12px] text-[#ffb4b4]">
@@ -218,19 +218,29 @@ export default function Home() {
           </div>
         )}
         <div className="flex-1 space-y-3 overflow-y-auto p-5">
-          {msgs.length === 0 && tools.length === 0 && <p className="mt-10 text-center text-sm text-neutral-600">和皮皮虾聊聊吧</p>}
+          {msgs.length === 0 && tools.length === 0 && <div className="mt-16 text-center">
+    <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-[#28b894]/15 to-[#3b82f6]/15 text-2xl">🦐</div>
+    <p className="text-sm text-neutral-500">和皮皮虾聊聊吧</p>
+    <p className="mt-1 text-[11px] text-neutral-700">支持工具调用 · 多会话 · 记忆 · 轨迹</p>
+  </div>}
           {tools.map((ev, i) => <ToolCard key={i} ev={ev} />)}
           {msgs.map((m, i) => (
-            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${m.role === "user" ? "bg-[#1d5cff] text-white" : "bg-neutral-800 border border-neutral-700"}`}>{m.content}</div>
+            <div key={i} className={`msg-in flex items-start gap-2 ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+              {m.role === "agent" && (
+                <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#28b894] to-[#3b82f6] text-xs font-bold text-white shadow-md shadow-cyan-500/10">虾</div>
+              )}
+              <div className="max-w-[78%]">
+                {m.role === "agent" && <div className="mb-0.5 text-[10px] text-neutral-600">皮皮虾</div>}
+                <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${m.role === "user" ? "bg-gradient-to-br from-[#1d5cff] to-[#2563eb] text-white shadow-blue-500/20" : "border border-[#26292f] bg-[#1a1d24]"}`}>{m.content}</div>
+              </div>
             </div>
           ))}
           <div ref={endRef} />
         </div>
         {busyInfo && <div className="border-t border-neutral-800 px-5 pt-2 text-[12px] text-[#4da3ff]">{busyInfo}</div>}
         <footer className="flex gap-2 border-t border-neutral-800 p-4">
-          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="输入消息，回车发送" className="flex-1 rounded-xl border border-neutral-700 bg-neutral-900 px-4 py-2.5 text-sm outline-none focus:border-[#1d5cff]" />
-          <button onClick={send} disabled={busy} className="rounded-xl bg-[#1d5cff] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50">{busy ? "…" : "发送"}</button>
+          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="输入消息，回车发送" className="field flex-1 rounded-xl border border-[#2a2e37] bg-neutral-900 px-4 py-2.5 text-sm outline-none" />
+          <button onClick={send} disabled={busy} className="rounded-xl bg-gradient-to-br from-[#1d5cff] to-[#2563eb] px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/25 hover:from-[#1b4fd8] hover:to-[#2b6af0] disabled:opacity-40">{busy ? "…" : "发送"}</button>
         </footer>
       </main>
 
@@ -238,7 +248,7 @@ export default function Home() {
       <aside className="flex w-[380px] flex-col">
         <div className="flex border-b border-neutral-800 text-[13px]">
           {(["sessions","scenes","memory","traces","stats"] as const).map((t) => (
-            <button key={t} onClick={() => setTab(t)} className={`flex-1 py-3 transition-colors ${tab === t ? "border-b-2 border-[#4da3ff] text-[#4da3ff]" : "text-neutral-500 hover:text-neutral-300"}`}>
+            <button key={t} onClick={() => setTab(t)} className={`flex-1 py-3 transition-colors hover:text-neutral-200 ${tab === t ? "border-b-2 border-[#4da3ff] bg-[#16202b] text-[#4da3ff]" : "text-neutral-500"}`}>
               {t === "sessions" ? "会话" : t === "scenes" ? "场景" : t === "memory" ? "记忆" : t === "traces" ? "轨迹" : "统计"}
             </button>
           ))}
@@ -248,7 +258,7 @@ export default function Home() {
             <div>
               <button onClick={newSession} className="mb-3 w-full rounded-xl bg-[#1d5cff] py-2.5 text-sm font-medium text-white hover:bg-[#1a4fd8]">+ 新建会话</button>
               {sessions.map((s) => (
-                <div key={s.key} className={`mb-2 rounded-xl border p-3 ${s.key === currentKey ? "border-[#4da3ff] bg-[#14202e]" : "border-neutral-800 bg-neutral-900"}`}>
+                <div key={s.key} className={`mb-2 rounded-xl border p-3 transition-colors ${s.key === currentKey ? "border-[#4da3ff] bg-[#14202e]" : "border-[#26292f] bg-neutral-900/70 hover:border-[#2f3440]"}`}>
                   <div className="flex items-center gap-2">
                     <button onClick={() => switchSession(s.key)} className="flex-1 truncate text-left text-sm font-medium text-neutral-200 hover:text-[#4da3ff]" title={s.key}>{s.title || s.key}</button>
                     <span className="text-[10px] text-neutral-600">{s.count} 条</span>
@@ -264,7 +274,7 @@ export default function Home() {
             <div>
               <button onClick={() => setSceneModal(true)} className="mb-3 w-full rounded-xl bg-[#1d5cff] py-2.5 text-sm font-medium text-white hover:bg-[#1a4fd8]">+ 新建场景</button>
               {scenes.map((s) => (
-                <div key={s.id} className="mb-3 rounded-xl border border-neutral-800 bg-neutral-900 p-3.5">
+                <div key={s.id} className="mb-3 rounded-xl border border-[#26292f] bg-neutral-900/70 p-3.5 shadow-sm transition-colors hover:border-[#2f3440]">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-semibold">{s.name}</span>
                     <span className={`rounded-full px-2 py-0.5 text-[10px] ${s.mode === "manual" ? "bg-[#0f3d24] text-[#3ddc84]" : "bg-neutral-800 text-neutral-500"}`}>{s.mode === "manual" ? "自定义" : "自动"}</span>
@@ -279,14 +289,14 @@ export default function Home() {
           )}
           {tab === "memory" && (
             <div>
-              {facts.map((f, i) => <div key={i} className="mb-2 rounded-xl border border-neutral-800 bg-neutral-900 p-3 text-[13px]">{f.content}</div>)}
+              {facts.map((f, i) => <div key={i} className="msg-in mb-2 rounded-xl border border-[#26292f] bg-neutral-900/70 p-3 text-[13px]">{f.content}</div>)}
               {facts.length === 0 && <p className="text-center text-sm text-neutral-600">暂无记忆</p>}
             </div>
           )}
           {tab === "traces" && (
             <div>
               {traces.map((t, i) => (
-                <div key={i} className="mb-2 rounded-xl border border-neutral-800 bg-neutral-900 p-3">
+                <div key={i} className="msg-in mb-2 rounded-xl border border-[#26292f] bg-neutral-900/70 p-3">
                   <div className="flex items-center gap-2 text-[13px]"><span className="font-medium">{t.tool}</span><span className={`rounded px-1.5 text-[10px] ${t.ok ? "bg-[#0f3d24] text-[#3ddc84]" : "bg-[#3d1d1d] text-[#ff6b6b]"}`}>{t.ok ? "OK" : "FAIL"}</span><span className="text-neutral-500">{t.durationMs}ms</span></div>
                   <p className="mt-1 truncate text-[11px] text-neutral-600">{t.args}</p>
                 </div>

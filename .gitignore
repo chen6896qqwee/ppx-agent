@@ -37,3 +37,6 @@ _web.*
 .gh-token
 
 skills/.usage.json
+
+# 临时备份(不提交)
+*.bak_0821
